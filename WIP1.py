@@ -1,3 +1,5 @@
+import os
+import shutil
 import cv2
 import numpy as np
 
@@ -124,3 +126,15 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
+    # --- Post-processing: Move images into a folder ---
+
+
+OUTPUT_DIR = "output_images"
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+for filename in os.listdir("."):
+    if filename.endswith(".jpg"):
+        shutil.move(filename, os.path.join(OUTPUT_DIR, filename))
+
+print(f"\n📂 All generated images have been moved into '{OUTPUT_DIR}'")
