@@ -5,6 +5,7 @@
 import tkinter as tk
 from tkinter import ttk
 from PIL import Image, ImageTk
+from tkinter import filedialog, messagebox
 import os
 
 
@@ -125,9 +126,61 @@ class AnonVisionGUI:
         self.status_label.pack(fill=tk.X, padx=2, pady=2)
     
     def select_image(self):
-        """Placeholder for select image functionality"""
-        self.update_status("Select image clicked - functionality to be added")
-        print("Select Image button clicked")
+        """Open file dialog to select an image"""
+        # File dialog to select image
+        filetypes = [
+            ('Image files', '*.jpg *.jpeg *.png *.bmp'),
+            ('JPEG files', '*.jpg *.jpeg'),
+            ('PNG files', '*.png'),
+            ('BMP files', '*.bmp'),
+            ('All files', '*.*')
+        ]
+        
+        filepath = filedialog.askopenfilename(
+            title="Select an image",
+            filetypes=filetypes,
+            initialdir=os.getcwd()
+        )
+        
+        if filepath:
+            # Validate the selected file
+            if not self._validate_image(filepath):
+                messagebox.showerror(
+                    "Invalid File",
+                    "Please select a valid image file (JPG, PNG, or BMP)"
+                )
+                return
+            
+            self.current_image_path = filepath
+            filename = os.path.basename(filepath)
+            self.update_status(f"Selected: {filename}")
+            print(f"Selected image: {filepath}")
+        else:
+            self.update_status("No image selected")
+    
+    def _validate_image(self, filepath):
+        """
+        Validate if selected file is a valid image
+        
+        Args:
+            filepath (str): Path to file
+            
+        Returns:
+            bool: True if valid image
+        """
+        from utils import validate_image_path
+        
+        if not validate_image_path(filepath):
+            return False
+        
+        # Try to open the image
+        try:
+            test_image = Image.open(filepath)
+            test_image.verify()  # Verify it's actually an image
+            return True
+        except Exception as e:
+            print(f"Error validating image: {e}")
+            return False
     
     def save_image(self):
         """Placeholder for save image functionality"""
