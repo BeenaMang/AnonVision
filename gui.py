@@ -1,12 +1,16 @@
-### AnonVision - GUI Module
+
+##GUI Module for AnonVision
 
 
 
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, filedialog, messagebox
 from PIL import Image, ImageTk
-from tkinter import filedialog, messagebox
 import os
+import cv2
+import numpy as np
+from face_detector import FaceDetector
+from utils import validate_image_path, resize_image_for_display
 
 
 class AnonVisionGUI:
@@ -26,6 +30,19 @@ class AnonVisionGUI:
         self.current_image_path = None
         self.current_image = None
         self.display_image = None
+        self.detected_faces = []
+        self.current_image_array = None
+        self.photo_image = None
+        
+        # Initialize face detector
+        try:
+            self.face_detector = FaceDetector()
+        except Exception as e:
+            messagebox.showerror(
+                "Initialization Error",
+                f"Could not initialize face detector:\n{str(e)}"
+            )
+            self.face_detector = None
         
         # Create GUI elements
         self._create_widgets()
@@ -93,6 +110,9 @@ class AnonVisionGUI:
         )
         self.canvas.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
         
+        # Bind resize event
+        self.canvas.bind('<Configure>', self._on_canvas_configure)
+        
         # Add scrollbars
         v_scrollbar = ttk.Scrollbar(display_frame, orient=tk.VERTICAL, command=self.canvas.yview)
         v_scrollbar.grid(row=0, column=1, sticky=(tk.N, tk.S))
@@ -151,10 +171,8 @@ class AnonVisionGUI:
                 )
                 return
             
-            self.current_image_path = filepath
-            filename = os.path.basename(filepath)
-            self.update_status(f"Selected: {filename}")
-            print(f"Selected image: {filepath}")
+            # Load and display the image
+            self._load_and_display_image(filepath)
         else:
             self.update_status("No image selected")
     
@@ -168,8 +186,6 @@ class AnonVisionGUI:
         Returns:
             bool: True if valid image
         """
-        from utils import validate_image_path
-        
         if not validate_image_path(filepath):
             return False
         
@@ -181,6 +197,101 @@ class AnonVisionGUI:
         except Exception as e:
             print(f"Error validating image: {e}")
             return False
+    
+    def _load_and_display_image(self, filepath):
+        """
+        Load an image and display it on the canvas
+        
+        Args:
+            filepath (str): Path to image file
+        """
+        try:
+            # Load image
+            self.current_image_path = filepath
+            self.current_image = Image.open(filepath)
+            
+            # Detect faces
+            self._detect_faces_in_image(filepath)
+            
+            # Get canvas dimensions
+            canvas_width = self.canvas.winfo_width()
+            canvas_height = self.canvas.winfo_height()
+            
+            # Use default size if canvas not yet rendered
+            if canvas_width <= 1:
+                canvas_width = 800
+                canvas_height = 500
+            
+            # Resize image for display
+            self.display_image = resize_image_for_display(
+                self.current_image,
+                max_width=canvas_width - 20,
+                max_height=canvas_height - 20
+            )
+            
+            # Convert to PhotoImage
+            self.photo_image = ImageTk.PhotoImage(self.display_image)
+            
+            # Clear canvas
+            self.canvas.delete('all')
+            
+            # Display image
+            self.canvas.create_image(
+                canvas_width // 2,
+                canvas_height // 2,
+                image=self.photo_image,
+                anchor=tk.CENTER,
+                tags='image'
+            )
+            
+            # Update canvas scroll region
+            self.canvas.configure(scrollregion=self.canvas.bbox('all'))
+            
+            # Update status with face count
+            filename = os.path.basename(filepath)
+            img_width, img_height = self.current_image.size
+            face_count = len(self.detected_faces)
+            
+            status_text = f"Loaded: {filename} ({img_width}x{img_height}) | {face_count} face(s) detected"
+            self.update_status(status_text)
+            
+            print(f"Successfully loaded and displayed: {filepath}")
+            
+        except Exception as e:
+            messagebox.showerror(
+                "Error Loading Image",
+                f"Could not load image:\n{str(e)}"
+            )
+            print(f"Error loading image: {e}")
+    
+    def _detect_faces_in_image(self, filepath):
+        """
+        Detect faces in the loaded image
+        
+        Args:
+            filepath (str): Path to image file
+        """
+        if not self.face_detector:
+            self.detected_faces = []
+            return
+        
+        try:
+            # Detect faces
+            image_array, faces = self.face_detector.detect_faces(filepath)
+            self.detected_faces = faces
+            self.current_image_array = image_array
+            
+            print(f"Detected {len(faces)} face(s)")
+            
+        except Exception as e:
+            print(f"Error detecting faces: {e}")
+            self.detected_faces = []
+    
+    def _on_canvas_configure(self, event):
+        """Handle canvas resize events"""
+        if self.current_image_path and event.width > 1:
+            # Reload image with new size
+            self._load_and_display_image(self.current_image_path)
     
     def save_image(self):
         """Placeholder for save image functionality"""
