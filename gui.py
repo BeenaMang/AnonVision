@@ -1,7 +1,4 @@
-
 ##GUI Module for AnonVision
-
-
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
@@ -45,7 +42,7 @@ class AnonVisionGUI:
             )
             self.face_detector = None
             
-            # Initialize DNN detector (optional, more accurate)
+        # Initialize DNN detector (optional, more accurate)
         self.dnn_detector = None
         try:
             self.dnn_detector = DNNFaceDetector()
@@ -88,7 +85,6 @@ class AnonVisionGUI:
         
         # Status bar
         self._create_status_bar(main_frame)
-        
     
     def _create_top_buttons(self, parent):
         """Create top button panel"""
@@ -165,12 +161,29 @@ class AnonVisionGUI:
         self.status_label.pack(fill=tk.X, padx=2, pady=2)
         
     def _create_advanced_settings(self, parent):
-        """Create advanced detection settings panel"""
-        settings_frame = ttk.LabelFrame(parent, text="Advanced Detection Settings", padding="10")
-        settings_frame.grid(row=3, column=0, sticky=(tk.W, tk.E), pady=(10, 0))
+        """Create collapsible advanced detection settings panel"""
+        # Main container
+        settings_container = ttk.Frame(parent)
+        settings_container.grid(row=3, column=0, sticky=(tk.W, tk.E), pady=(10, 0))
+        
+        # Toggle button
+        self.show_advanced = tk.BooleanVar(value=False)
+        self.btn_toggle_advanced = ttk.Button(
+            settings_container,
+            text="▶ Show Advanced Detection Settings",
+            command=self._toggle_advanced_settings
+        )
+        self.btn_toggle_advanced.pack(fill=tk.X, pady=(0, 5))
+        
+        # Settings frame (initially hidden)
+        self.settings_frame = ttk.LabelFrame(
+            settings_container,
+            text="Advanced Detection Settings",
+            padding="10"
+        )
         
         # Detection method selection
-        method_frame = ttk.Frame(settings_frame)
+        method_frame = ttk.Frame(self.settings_frame)
         method_frame.pack(fill=tk.X, pady=5)
         
         ttk.Label(method_frame, text="Detection Method:").pack(side=tk.LEFT, padx=5)
@@ -193,7 +206,7 @@ class AnonVisionGUI:
             ).pack(side=tk.LEFT, padx=5)
         
         # Haar Cascade parameters
-        self.haar_params_frame = ttk.Frame(settings_frame)
+        self.haar_params_frame = ttk.Frame(self.settings_frame)
         self.haar_params_frame.pack(fill=tk.X, pady=5)
         
         # Scale Factor
@@ -236,7 +249,7 @@ class AnonVisionGUI:
         ttk.Label(self.haar_params_frame, text="(10-100 pixels)").grid(row=2, column=2, padx=5)
         
         # DNN parameters
-        self.dnn_params_frame = ttk.Frame(settings_frame)
+        self.dnn_params_frame = ttk.Frame(self.settings_frame)
         
         ttk.Label(self.dnn_params_frame, text="Confidence Threshold:").grid(row=0, column=0, padx=5, sticky=tk.W)
         conf_spinbox = ttk.Spinbox(
@@ -252,14 +265,27 @@ class AnonVisionGUI:
         
         # Re-detect button
         ttk.Button(
-            settings_frame,
+            self.settings_frame,
             text="Re-detect Faces",
             command=self._redetect_faces
         ).pack(pady=10)
         
         # Show appropriate parameters
         self._on_detection_method_change()
-        
+    
+    def _toggle_advanced_settings(self):
+        """Toggle visibility of advanced settings"""
+        if self.show_advanced.get():
+            # Hide settings
+            self.settings_frame.pack_forget()
+            self.btn_toggle_advanced.config(text="▶ Show Advanced Detection Settings")
+            self.show_advanced.set(False)
+        else:
+            # Show settings
+            self.settings_frame.pack(fill=tk.X, pady=5)
+            self.btn_toggle_advanced.config(text="▼ Hide Advanced Detection Settings")
+            self.show_advanced.set(True)
+    
     def _on_detection_method_change(self):
         """Handle detection method change"""
         if self.detection_method.get() == "haar":
