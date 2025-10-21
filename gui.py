@@ -107,6 +107,19 @@ class AnonVisionGUI:
             state=tk.DISABLED
         )
         self.btn_save.pack(side=tk.LEFT, padx=5)
+        
+        # Separator
+        ttk.Separator(button_frame, orient=tk.VERTICAL).pack(side=tk.LEFT, padx=10, fill=tk.Y)
+        
+        # Show detection boxes checkbox
+        self.show_boxes = tk.BooleanVar(value=True)
+        self.chk_show_boxes = ttk.Checkbutton(
+            button_frame,
+            text="Show Detection Boxes",
+            variable=self.show_boxes,
+            command=self._toggle_detection_boxes
+        )
+        self.chk_show_boxes.pack(side=tk.LEFT, padx=5)
     
     def _create_image_display(self, parent):
         """Create image display area"""
@@ -309,6 +322,78 @@ class AnonVisionGUI:
         
         self.update_status(f"Re-detected faces: {len(self.detected_faces)} face(s) found")
     
+    def _toggle_detection_boxes(self):
+        """Toggle detection boxes visibility"""
+        if self.current_image_path:
+            if self.show_boxes.get():
+                # Show boxes
+                self._draw_detection_boxes_on_display()
+                self.update_status(f"Showing detection boxes for {len(self.detected_faces)} face(s)")
+            else:
+                # Hide boxes - reload original image
+                self._load_and_display_image(self.current_image_path)
+                self.update_status("Detection boxes hidden")
+    
+    def _draw_detection_boxes_on_display(self):
+        """Draw detection boxes on the displayed image"""
+        if not hasattr(self, 'current_image_array') or self.current_image_array is None:
+            return
+        
+        if not hasattr(self, 'detected_faces') or len(self.detected_faces) == 0:
+            return
+        
+        try:
+            # Draw boxes on the image array
+            image_with_boxes = self.face_detector.draw_detection_boxes(
+                self.current_image_array,
+                self.detected_faces,
+                color=(0, 255, 0),  # Green
+                thickness=3,
+                show_label=True
+            )
+            
+            # Convert from BGR to RGB
+            image_rgb = cv2.cvtColor(image_with_boxes, cv2.COLOR_BGR2RGB)
+            
+            # Convert to PIL Image
+            pil_image = Image.fromarray(image_rgb)
+            
+            # Get canvas dimensions
+            canvas_width = self.canvas.winfo_width()
+            canvas_height = self.canvas.winfo_height()
+            
+            if canvas_width <= 1:
+                canvas_width = 800
+                canvas_height = 500
+            
+            # Resize for display
+            self.display_image = resize_image_for_display(
+                pil_image,
+                max_width=canvas_width - 20,
+                max_height=canvas_height - 20
+            )
+            
+            # Convert to PhotoImage
+            self.photo_image = ImageTk.PhotoImage(self.display_image)
+            
+            # Clear canvas
+            self.canvas.delete('all')
+            
+            # Display image
+            self.canvas.create_image(
+                canvas_width // 2,
+                canvas_height // 2,
+                image=self.photo_image,
+                anchor=tk.CENTER,
+                tags='image'
+            )
+            
+            # Update canvas scroll region
+            self.canvas.configure(scrollregion=self.canvas.bbox('all'))
+            
+        except Exception as e:
+            print(f"Error drawing detection boxes: {e}")
+    
     def select_image(self):
         """Open file dialog to select an image"""
         # File dialog to select image
@@ -393,23 +478,27 @@ class AnonVisionGUI:
                 max_height=canvas_height - 20
             )
             
-            # Convert to PhotoImage
-            self.photo_image = ImageTk.PhotoImage(self.display_image)
-            
-            # Clear canvas
-            self.canvas.delete('all')
-            
-            # Display image
-            self.canvas.create_image(
-                canvas_width // 2,
-                canvas_height // 2,
-                image=self.photo_image,
-                anchor=tk.CENTER,
-                tags='image'
-            )
-            
-            # Update canvas scroll region
-            self.canvas.configure(scrollregion=self.canvas.bbox('all'))
+            # Display image with or without detection boxes
+            if self.show_boxes.get() and len(self.detected_faces) > 0:
+                self._draw_detection_boxes_on_display()
+            else:
+                # Convert to PhotoImage
+                self.photo_image = ImageTk.PhotoImage(self.display_image)
+                
+                # Clear canvas
+                self.canvas.delete('all')
+                
+                # Display image
+                self.canvas.create_image(
+                    canvas_width // 2,
+                    canvas_height // 2,
+                    image=self.photo_image,
+                    anchor=tk.CENTER,
+                    tags='image'
+                )
+                
+                # Update canvas scroll region
+                self.canvas.configure(scrollregion=self.canvas.bbox('all'))
             
             # Update status with face count
             filename = os.path.basename(filepath)
