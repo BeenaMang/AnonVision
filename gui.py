@@ -11,6 +11,7 @@ import cv2
 import numpy as np
 from face_detector import FaceDetector
 from utils import validate_image_path, resize_image_for_display
+from dnn_detector import DNNFaceDetector
 
 
 class AnonVisionGUI:
@@ -43,6 +44,20 @@ class AnonVisionGUI:
                 f"Could not initialize face detector:\n{str(e)}"
             )
             self.face_detector = None
+            
+            # Initialize DNN detector (optional, more accurate)
+        self.dnn_detector = None
+        try:
+            self.dnn_detector = DNNFaceDetector()
+        except Exception as e:
+            print(f"DNN detector not available: {e}")
+        
+        # Detection settings
+        self.detection_method = tk.StringVar(value="haar")  # 'haar' or 'dnn'
+        self.scale_factor = tk.DoubleVar(value=1.1)
+        self.min_neighbors = tk.IntVar(value=5)
+        self.min_size = tk.IntVar(value=30)
+        self.dnn_confidence = tk.DoubleVar(value=0.5)
         
         # Create GUI elements
         self._create_widgets()
@@ -68,8 +83,12 @@ class AnonVisionGUI:
         # Image display area
         self._create_image_display(main_frame)
         
+        # Advanced settings panel
+        self._create_advanced_settings(main_frame)
+        
         # Status bar
         self._create_status_bar(main_frame)
+        
     
     def _create_top_buttons(self, parent):
         """Create top button panel"""
@@ -144,6 +163,125 @@ class AnonVisionGUI:
             anchor=tk.W
         )
         self.status_label.pack(fill=tk.X, padx=2, pady=2)
+        
+    def _create_advanced_settings(self, parent):
+        """Create advanced detection settings panel"""
+        settings_frame = ttk.LabelFrame(parent, text="Advanced Detection Settings", padding="10")
+        settings_frame.grid(row=3, column=0, sticky=(tk.W, tk.E), pady=(10, 0))
+        
+        # Detection method selection
+        method_frame = ttk.Frame(settings_frame)
+        method_frame.pack(fill=tk.X, pady=5)
+        
+        ttk.Label(method_frame, text="Detection Method:").pack(side=tk.LEFT, padx=5)
+        
+        ttk.Radiobutton(
+            method_frame,
+            text="Haar Cascade (Fast)",
+            variable=self.detection_method,
+            value="haar",
+            command=self._on_detection_method_change
+        ).pack(side=tk.LEFT, padx=5)
+        
+        if self.dnn_detector:
+            ttk.Radiobutton(
+                method_frame,
+                text="DNN (More Accurate)",
+                variable=self.detection_method,
+                value="dnn",
+                command=self._on_detection_method_change
+            ).pack(side=tk.LEFT, padx=5)
+        
+        # Haar Cascade parameters
+        self.haar_params_frame = ttk.Frame(settings_frame)
+        self.haar_params_frame.pack(fill=tk.X, pady=5)
+        
+        # Scale Factor
+        ttk.Label(self.haar_params_frame, text="Scale Factor:").grid(row=0, column=0, padx=5, sticky=tk.W)
+        scale_spinbox = ttk.Spinbox(
+            self.haar_params_frame,
+            from_=1.01,
+            to=2.0,
+            increment=0.01,
+            textvariable=self.scale_factor,
+            width=10
+        )
+        scale_spinbox.grid(row=0, column=1, padx=5)
+        ttk.Label(self.haar_params_frame, text="(1.01-2.0, lower=more faces)").grid(row=0, column=2, padx=5)
+        
+        # Min Neighbors
+        ttk.Label(self.haar_params_frame, text="Min Neighbors:").grid(row=1, column=0, padx=5, sticky=tk.W)
+        neighbors_spinbox = ttk.Spinbox(
+            self.haar_params_frame,
+            from_=1,
+            to=10,
+            increment=1,
+            textvariable=self.min_neighbors,
+            width=10
+        )
+        neighbors_spinbox.grid(row=1, column=1, padx=5)
+        ttk.Label(self.haar_params_frame, text="(1-10, higher=fewer false positives)").grid(row=1, column=2, padx=5)
+        
+        # Min Size
+        ttk.Label(self.haar_params_frame, text="Min Size:").grid(row=2, column=0, padx=5, sticky=tk.W)
+        size_spinbox = ttk.Spinbox(
+            self.haar_params_frame,
+            from_=10,
+            to=100,
+            increment=5,
+            textvariable=self.min_size,
+            width=10
+        )
+        size_spinbox.grid(row=2, column=1, padx=5)
+        ttk.Label(self.haar_params_frame, text="(10-100 pixels)").grid(row=2, column=2, padx=5)
+        
+        # DNN parameters
+        self.dnn_params_frame = ttk.Frame(settings_frame)
+        
+        ttk.Label(self.dnn_params_frame, text="Confidence Threshold:").grid(row=0, column=0, padx=5, sticky=tk.W)
+        conf_spinbox = ttk.Spinbox(
+            self.dnn_params_frame,
+            from_=0.1,
+            to=0.95,
+            increment=0.05,
+            textvariable=self.dnn_confidence,
+            width=10
+        )
+        conf_spinbox.grid(row=0, column=1, padx=5)
+        ttk.Label(self.dnn_params_frame, text="(0.1-0.95, higher=more confident detections)").grid(row=0, column=2, padx=5)
+        
+        # Re-detect button
+        ttk.Button(
+            settings_frame,
+            text="Re-detect Faces",
+            command=self._redetect_faces
+        ).pack(pady=10)
+        
+        # Show appropriate parameters
+        self._on_detection_method_change()
+        
+    def _on_detection_method_change(self):
+        """Handle detection method change"""
+        if self.detection_method.get() == "haar":
+            self.haar_params_frame.pack(fill=tk.X, pady=5)
+            self.dnn_params_frame.pack_forget()
+        else:
+            self.haar_params_frame.pack_forget()
+            self.dnn_params_frame.pack(fill=tk.X, pady=5)
+    
+    def _redetect_faces(self):
+        """Re-run face detection with current parameters"""
+        if not self.current_image_path:
+            messagebox.showinfo("No Image", "Please load an image first")
+            return
+        
+        # Re-detect with current settings
+        self._detect_faces_in_image(self.current_image_path)
+        
+        # Refresh display
+        self._load_and_display_image(self.current_image_path)
+        
+        self.update_status(f"Re-detected faces: {len(self.detected_faces)} face(s) found")
     
     def select_image(self):
         """Open file dialog to select an image"""
@@ -266,22 +404,42 @@ class AnonVisionGUI:
     
     def _detect_faces_in_image(self, filepath):
         """
-        Detect faces in the loaded image
+        Detect faces in the loaded image using selected method
         
         Args:
             filepath (str): Path to image file
         """
-        if not self.face_detector:
-            self.detected_faces = []
-            return
-        
         try:
-            # Detect faces
-            image_array, faces = self.face_detector.detect_faces(filepath)
-            self.detected_faces = faces
-            self.current_image_array = image_array
-            
-            print(f"Detected {len(faces)} face(s)")
+            if self.detection_method.get() == "dnn" and self.dnn_detector:
+                # Use DNN detector
+                image_array, faces = self.dnn_detector.detect_faces(
+                    filepath,
+                    confidence_threshold=self.dnn_confidence.get()
+                )
+                self.detected_faces = faces
+                self.current_image_array = image_array
+                print(f"DNN detected {len(faces)} face(s)")
+            else:
+                # Use Haar Cascade with custom parameters
+                if not self.face_detector:
+                    self.detected_faces = []
+                    return
+                
+                # Read image
+                image_array = cv2.imread(filepath)
+                gray = cv2.cvtColor(image_array, cv2.COLOR_BGR2GRAY)
+                
+                # Detect with custom parameters
+                faces = self.face_detector.face_cascade.detectMultiScale(
+                    gray,
+                    scaleFactor=self.scale_factor.get(),
+                    minNeighbors=self.min_neighbors.get(),
+                    minSize=(self.min_size.get(), self.min_size.get())
+                )
+                
+                self.detected_faces = faces
+                self.current_image_array = image_array
+                print(f"Haar Cascade detected {len(faces)} face(s)")
             
         except Exception as e:
             print(f"Error detecting faces: {e}")
