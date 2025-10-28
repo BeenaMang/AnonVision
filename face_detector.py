@@ -77,24 +77,56 @@ class FaceDetector:
         
         return image, faces
     
-    def draw_detection_boxes(self, image, faces, color=(0, 255, 0), thickness=2):
+    def draw_detection_boxes(self, image, faces, color=(0, 255, 0), thickness=2, show_label=True):
         """
-        Draw rectangles around detected faces
+           Draw rectangles around detected faces with optional labels
+    
+         Args:
+         image: The image array (numpy array from OpenCV)
+         faces: List of (x, y, w, h) tuples
+         color: BGR color tuple (default: green)
+         thickness: Line thickness in pixels
+         show_label: Whether to show face number labels
         
-        Args:
-            image: The image array
-            faces: List of (x, y, w, h) tuples
-            color: BGR color tuple (default: green)
-            thickness: Line thickness in pixels
-            
-        Returns:
-            image: Image with detection boxes drawn
+         Returns:
+                 image: Image with detection boxes drawn
         """
         image_copy = image.copy()
+    
+        for i, (x, y, w, h) in enumerate(faces):
+           # Draw rectangle
+          cv2.rectangle(image_copy, (x, y), (x+w, y+h), color, thickness)
         
-        for (x, y, w, h) in faces:
-            cv2.rectangle(image_copy, (x, y), (x+w, y+h), color, thickness)
-        
+        # Draw label if requested
+        if show_label:
+            label = f"Face {i+1}"
+            
+            # Calculate label position
+            label_y = y - 10 if y - 10 > 10 else y + h + 20
+            
+            # Draw label background
+            (label_width, label_height), baseline = cv2.getTextSize(
+                label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1
+            )
+            cv2.rectangle(
+                image_copy,
+                (x, label_y - label_height - baseline),
+                (x + label_width, label_y),
+                color,
+                -1  # Filled rectangle
+            )
+            
+            # Draw label text
+            cv2.putText(
+                image_copy,
+                label,
+                (x, label_y - baseline),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (255, 255, 255),  # White text
+                1
+            )
+    
         return image_copy
 
 
