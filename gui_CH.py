@@ -129,7 +129,7 @@ class AnonVisionGUI:
         display_frame.columnconfigure(0, weight=1)
         display_frame.rowconfigure(0, weight=1)
         
-        # Canvas for image
+        # Canvas for image (no scrollbars needed since we fit to display area)
         self.canvas = tk.Canvas(
             display_frame,
             bg='gray85',
@@ -141,18 +141,10 @@ class AnonVisionGUI:
         # Bind resize event
         self.canvas.bind('<Configure>', self._on_canvas_configure)
         
-        # Add scrollbars
-        v_scrollbar = ttk.Scrollbar(display_frame, orient=tk.VERTICAL, command=self.canvas.yview)
-        v_scrollbar.grid(row=0, column=1, sticky=(tk.N, tk.S))
-        
-        h_scrollbar = ttk.Scrollbar(display_frame, orient=tk.HORIZONTAL, command=self.canvas.xview)
-        h_scrollbar.grid(row=1, column=0, sticky=(tk.W, tk.E))
-        
-        self.canvas.configure(yscrollcommand=v_scrollbar.set, xscrollcommand=h_scrollbar.set)
-        
         # Placeholder text
         self.canvas.create_text(
-            450, 300,
+            self.canvas.winfo_reqwidth() // 2 if self.canvas.winfo_reqwidth() > 1 else 450,
+            self.canvas.winfo_reqheight() // 2 if self.canvas.winfo_reqheight() > 1 else 300,
             text="No image loaded\n\nClick 'Select Image' to begin",
             font=('Arial', 14),
             fill='gray50',
@@ -318,23 +310,22 @@ class AnonVisionGUI:
         self._detect_faces_in_image(self.current_image_path)
         
         # Refresh display
-        self._load_and_display_image(self.current_image_path)
+        self._refresh_image_display()
         
         self.update_status(f"Re-detected faces: {len(self.detected_faces)} face(s) found")
     
     def _toggle_detection_boxes(self):
         """Toggle detection boxes visibility"""
         if self.current_image_path:
+            # Just refresh the display with current detection boxes setting
+            self._refresh_image_display()
+            
             if self.show_boxes.get():
-                # Show boxes
-                self._draw_detection_boxes_on_display()
                 self.update_status(f"Showing detection boxes for {len(self.detected_faces)} face(s)")
             else:
-                # Hide boxes - reload original image
-                self._load_and_display_image(self.current_image_path)
                 self.update_status("Detection boxes hidden")
     
-    def _draw_detection_boxes_on_display(self):
+    def _draw_detection_boxes_on_display(self, display_width=None, display_height=None):
         """Draw detection boxes on the displayed image"""
         if not hasattr(self, 'current_image_array') or self.current_image_array is None:
             return
@@ -343,6 +334,19 @@ class AnonVisionGUI:
             return
         
         try:
+            # Get canvas dimensions if not provided
+            if display_width is None or display_height is None:
+                canvas_width = self.canvas.winfo_width()
+                canvas_height = self.canvas.winfo_height()
+                
+                if canvas_width <= 1 or canvas_height <= 1:
+                    canvas_width = 800
+                    canvas_height = 500
+                
+                # Limit to maximum 1024x1024 bounding box
+                display_width = min(canvas_width - 20, 1024)
+                display_height = min(canvas_height - 20, 1024)
+            
             # Draw boxes on the image array
             image_with_boxes = self.face_detector.draw_detection_boxes(
                 self.current_image_array,
@@ -358,19 +362,12 @@ class AnonVisionGUI:
             # Convert to PIL Image
             pil_image = Image.fromarray(image_rgb)
             
-            # Get canvas dimensions
-            canvas_width = self.canvas.winfo_width()
-            canvas_height = self.canvas.winfo_height()
-            
-            if canvas_width <= 1:
-                canvas_width = 800
-                canvas_height = 500
-            
-            # Resize for display
+            # Resize image to fill the display area with centering and padding
             self.display_image = resize_image_for_display(
                 pil_image,
-                max_width=canvas_width - 20,
-                max_height=canvas_height - 20
+                max_width=display_width,
+                max_height=display_height,
+                fill_background=(217, 217, 217)  # gray85 equivalent in RGB
             )
             
             # Convert to PhotoImage
@@ -379,7 +376,15 @@ class AnonVisionGUI:
             # Clear canvas
             self.canvas.delete('all')
             
-            # Display image
+            # Get actual canvas dimensions for centering
+            canvas_width = self.canvas.winfo_width()
+            canvas_height = self.canvas.winfo_height()
+            
+            if canvas_width <= 1 or canvas_height <= 1:
+                canvas_width = 800
+                canvas_height = 500
+            
+            # Display image centered in canvas
             self.canvas.create_image(
                 canvas_width // 2,
                 canvas_height // 2,
@@ -387,9 +392,6 @@ class AnonVisionGUI:
                 anchor=tk.CENTER,
                 tags='image'
             )
-            
-            # Update canvas scroll region
-            self.canvas.configure(scrollregion=self.canvas.bbox('all'))
             
         except Exception as e:
             print(f"Error drawing detection boxes: {e}")
@@ -459,46 +461,11 @@ class AnonVisionGUI:
             self.current_image_path = filepath
             self.current_image = Image.open(filepath)
             
-            # Detect faces
+            # Detect faces (only once when loading)
             self._detect_faces_in_image(filepath)
             
-            # Get canvas dimensions
-            canvas_width = self.canvas.winfo_width()
-            canvas_height = self.canvas.winfo_height()
-            
-            # Use default size if canvas not yet rendered
-            if canvas_width <= 1:
-                canvas_width = 800
-                canvas_height = 500
-            
-            # Resize image for display
-            self.display_image = resize_image_for_display(
-                self.current_image,
-                max_width=canvas_width - 20,
-                max_height=canvas_height - 20
-            )
-            
-            # Display image with or without detection boxes
-            if self.show_boxes.get() and len(self.detected_faces) > 0:
-                self._draw_detection_boxes_on_display()
-            else:
-                # Convert to PhotoImage
-                self.photo_image = ImageTk.PhotoImage(self.display_image)
-                
-                # Clear canvas
-                self.canvas.delete('all')
-                
-                # Display image
-                self.canvas.create_image(
-                    canvas_width // 2,
-                    canvas_height // 2,
-                    image=self.photo_image,
-                    anchor=tk.CENTER,
-                    tags='image'
-                )
-                
-                # Update canvas scroll region
-                self.canvas.configure(scrollregion=self.canvas.bbox('all'))
+            # Refresh the display
+            self._refresh_image_display()
             
             # Update status with face count
             filename = os.path.basename(filepath)
@@ -563,8 +530,57 @@ class AnonVisionGUI:
     def _on_canvas_configure(self, event):
         """Handle canvas resize events"""
         if self.current_image_path and event.width > 1:
-            # Reload image with new size
-            self._load_and_display_image(self.current_image_path)
+            # Only refresh the display without re-running detection
+            self._refresh_image_display()
+    
+    def _refresh_image_display(self):
+        """Refresh the image display with current settings without re-running detection"""
+        if not self.current_image_path:
+            return
+            
+        try:
+            # Get canvas dimensions
+            canvas_width = self.canvas.winfo_width()
+            canvas_height = self.canvas.winfo_height()
+            
+            # Use reasonable default size if canvas not yet rendered
+            if canvas_width <= 1 or canvas_height <= 1:
+                canvas_width = 800
+                canvas_height = 500
+            
+            # Limit to maximum 1024x1024 bounding box
+            max_display_width = min(canvas_width - 20, 1024)
+            max_display_height = min(canvas_height - 20, 1024)
+            
+            # Display image with or without detection boxes
+            if self.show_boxes.get() and len(self.detected_faces) > 0:
+                self._draw_detection_boxes_on_display(max_display_width, max_display_height)
+            else:
+                # Resize image to fill the display area with centering and padding
+                self.display_image = resize_image_for_display(
+                    self.current_image,
+                    max_width=max_display_width,
+                    max_height=max_display_height,
+                    fill_background=(217, 217, 217)  # gray85 equivalent in RGB
+                )
+                
+                # Convert to PhotoImage
+                self.photo_image = ImageTk.PhotoImage(self.display_image)
+                
+                # Clear canvas
+                self.canvas.delete('all')
+                
+                # Display image centered in canvas
+                self.canvas.create_image(
+                    canvas_width // 2,
+                    canvas_height // 2,
+                    image=self.photo_image,
+                    anchor=tk.CENTER,
+                    tags='image'
+                )
+                
+        except Exception as e:
+            print(f"Error refreshing image display: {e}")
     
     def save_image(self):
         """Placeholder for save image functionality"""
