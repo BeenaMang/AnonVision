@@ -1,343 +1,169 @@
-##Face Recognition Module for AnonVision
-
-
-import os
-import pickle
+# face_whitelist.py (face_recognition optional; ORB fallback)
+from __future__ import annotations
+from typing import List, Tuple, Dict, Optional
+from pathlib import Path
+import os, json
 import cv2
 import numpy as np
-from typing import List, Tuple, Optional, Dict
-from pathlib import Path
 
-# Try to import face_recognition, fallback to basic OpenCV features if not available
 try:
     import face_recognition
-    FACE_RECOGNITION_AVAILABLE = True
-    print("✓ face_recognition library available (high accuracy)")
-except ImportError:
-    FACE_RECOGNITION_AVAILABLE = False
-    print("⚠ face_recognition not available, using OpenCV features (lower accuracy)")
-    print("  Install with: pip install face_recognition")
+    _HAS_FR = True
+except Exception:
+    _HAS_FR = False
 
+DB_DIR = Path("whitelist_db")
+DB_DIR.mkdir(parents=True, exist_ok=True)
+DB_META = DB_DIR / "faces.json"
 
 class FaceWhitelist:
-    """
-    Manages a whitelist of faces that should NOT be anonymized.
-    Uses face embeddings for robust matching.
-    """
-    
-    def __init__(self, storage_dir: str = "data/whitelist"):
-        self.storage_dir = storage_dir
-        os.makedirs(self.storage_dir, exist_ok=True)
-        
-        self.whitelist_file = os.path.join(self.storage_dir, "whitelist.pkl")
-        
-        # Storage: {name: {encoding: np.array, thumbnail_path: str}}
-        self.whitelisted_faces: Dict[str, Dict] = {}
-        
-        self.use_face_recognition = FACE_RECOGNITION_AVAILABLE
-        
-        # Load existing whitelist
-        self._load_whitelist()
-        
-        print(f"Face whitelist initialized ({len(self.whitelisted_faces)} protected faces)")
-    
-    def add_face(self, image_path: str, name: str) -> bool:
-        """
-        Add a face to the whitelist from an image.
-        
-        Args:
-            image_path: Path to image containing the face
-            name: Identifier for this person
-            
-        Returns:
-            True if face was added successfully, False otherwise
-        """
-        try:
-            print(f"Adding face to whitelist: {name}")
-            
-            # Load image
-            if self.use_face_recognition:
-                image = face_recognition.load_image_file(image_path)
-                
-                # Get face encodings
-                face_encodings = face_recognition.face_encodings(image)
-                
-                if len(face_encodings) == 0:
-                    print(f"  ✗ No face detected in image")
-                    return False
-                
-                if len(face_encodings) > 1:
-                    print(f"  ⚠ Multiple faces detected, using the first one")
-                
-                encoding = face_encodings[0]
-                
-            else:
-                # Fallback: Use OpenCV ORB features
-                image = cv2.imread(image_path)
-                gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-                
-                # Detect face
-                face_cascade = cv2.CascadeClassifier(
-                    cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
-                )
-                faces = face_cascade.detectMultiScale(gray, 1.1, 5)
-                
-                if len(faces) == 0:
-                    print(f"  ✗ No face detected in image")
-                    return False
-                
-                # Use first face
-                x, y, w, h = faces[0]
-                face_region = gray[y:y+h, x:x+w]
-                face_region = cv2.resize(face_region, (100, 100))
-                
-                # Compute ORB features as "encoding"
-                orb = cv2.ORB_create()
-                keypoints, descriptors = orb.detectAndCompute(face_region, None)
-                
-                if descriptors is None:
-                    print(f"  ✗ Could not extract features from face")
-                    return False
-                
-                encoding = descriptors.flatten()[:128]  # Use first 128 features
-                
-                # Pad if needed
-                if len(encoding) < 128:
-                    encoding = np.pad(encoding, (0, 128 - len(encoding)))
-            
-            # Save thumbnail
-            thumbnail_path = os.path.join(self.storage_dir, f"{name}_thumb.jpg")
-            self._save_thumbnail(image_path, thumbnail_path)
-            
-            # Store in whitelist
-            self.whitelisted_faces[name] = {
-                'encoding': encoding,
-                'thumbnail_path': thumbnail_path,
-                'source_image': image_path
-            }
-            
-            # Persist to disk
-            self._save_whitelist()
-            
-            print(f"  ✓ Face added to whitelist: {name}")
-            return True
-            
-        except Exception as e:
-            print(f"  ✗ Error adding face: {e}")
-            return False
-    
-    def remove_face(self, name: str) -> bool:
-        """Remove a face from the whitelist"""
-        if name in self.whitelisted_faces:
-            # Clean up thumbnail
-            thumb_path = self.whitelisted_faces[name].get('thumbnail_path')
-            if thumb_path and os.path.exists(thumb_path):
-                try:
-                    os.remove(thumb_path)
-                except:
-                    pass
-            
-            del self.whitelisted_faces[name]
-            self._save_whitelist()
-            print(f"✓ Removed {name} from whitelist")
-            return True
-        return False
-    
-    def clear_all(self):
-        """Remove all faces from whitelist"""
-        # Clean up thumbnails
-        for face_data in self.whitelisted_faces.values():
-            thumb_path = face_data.get('thumbnail_path')
-            if thumb_path and os.path.exists(thumb_path):
-                try:
-                    os.remove(thumb_path)
-                except:
-                    pass
-        
-        self.whitelisted_faces.clear()
-        self._save_whitelist()
-        print("✓ Cleared all faces from whitelist")
-    
-    def is_whitelisted(
-        self, 
-        face_image: np.ndarray, 
-        threshold: float = 0.6
-    ) -> Tuple[bool, Optional[str], float]:
-        """
-        Check if a detected face matches any whitelisted face.
-        
-        Args:
-            face_image: BGR image of the detected face
-            threshold: Similarity threshold (0.6 recommended for face_recognition, 0.7 for ORB)
-            
-        Returns:
-            (is_match, matched_name, confidence)
-        """
-        if len(self.whitelisted_faces) == 0:
-            return False, None, 0.0
-        
-        try:
-            if self.use_face_recognition:
-                # Convert BGR to RGB
-                rgb_face = cv2.cvtColor(face_image, cv2.COLOR_BGR2RGB)
-                
-                # Get encoding for this face
-                encodings = face_recognition.face_encodings(rgb_face)
-                
-                if len(encodings) == 0:
-                    return False, None, 0.0
-                
-                face_encoding = encodings[0]
-                
-                # Compare with all whitelisted faces
-                best_match_name = None
-                best_distance = float('inf')
-                
-                for name, data in self.whitelisted_faces.items():
-                    known_encoding = data['encoding']
-                    
-                    # Compute face distance (lower = more similar)
-                    distance = face_recognition.face_distance([known_encoding], face_encoding)[0]
-                    
-                    if distance < best_distance:
-                        best_distance = distance
-                        best_match_name = name
-                
-                # Convert distance to confidence (0-1, higher = more confident)
-                confidence = 1.0 - best_distance
-                is_match = best_distance < threshold
-                
-                return is_match, best_match_name, confidence
-                
-            else:
-                # Fallback: ORB feature matching
-                gray_face = cv2.cvtColor(face_image, cv2.COLOR_BGR2GRAY)
-                gray_face = cv2.resize(gray_face, (100, 100))
-                
-                orb = cv2.ORB_create()
-                kp, desc = orb.detectAndCompute(gray_face, None)
-                
-                if desc is None:
-                    return False, None, 0.0
-                
-                test_encoding = desc.flatten()[:128]
-                if len(test_encoding) < 128:
-                    test_encoding = np.pad(test_encoding, (0, 128 - len(test_encoding)))
-                
-                # Compare with whitelisted faces using cosine similarity
-                best_match_name = None
-                best_similarity = 0.0
-                
-                for name, data in self.whitelisted_faces.items():
-                    known_encoding = data['encoding']
-                    
-                    # Cosine similarity
-                    similarity = np.dot(test_encoding, known_encoding) / (
-                        np.linalg.norm(test_encoding) * np.linalg.norm(known_encoding)
-                    )
-                    
-                    if similarity > best_similarity:
-                        best_similarity = similarity
-                        best_match_name = name
-                
-                is_match = best_similarity > threshold
-                return is_match, best_match_name, best_similarity
-                
-        except Exception as e:
-            print(f"Error checking whitelist: {e}")
-            return False, None, 0.0
-    
-    def match_detected_faces(
-        self,
-        image: np.ndarray,
-        detected_faces: List[Tuple[int, int, int, int]],
-        threshold: float = 0.6
-    ) -> List[Dict]:
-        """
-        Check which detected faces match whitelisted faces.
-        
-        Args:
-            image: Full BGR image
-            detected_faces: List of (x, y, w, h) bounding boxes
-            threshold: Matching threshold
-            
-        Returns:
-            List of dicts with keys: bbox, is_whitelisted, matched_name, confidence
-        """
-        results = []
-        
-        for bbox in detected_faces:
-            x, y, w, h = bbox
-            
-            # Extract face region
-            face_img = image[y:y+h, x:x+w]
-            
-            # Check if whitelisted
-            is_match, name, confidence = self.is_whitelisted(face_img, threshold)
-            
-            results.append({
-                'bbox': bbox,
-                'is_whitelisted': is_match,
-                'matched_name': name,
-                'confidence': confidence
-            })
-        
-        return results
-    
-    def get_whitelisted_names(self) -> List[str]:
-        """Get list of all whitelisted names"""
-        return list(self.whitelisted_faces.keys())
-    
-    def get_thumbnail_path(self, name: str) -> Optional[str]:
-        """Get thumbnail path for a whitelisted face"""
-        if name in self.whitelisted_faces:
-            return self.whitelisted_faces[name].get('thumbnail_path')
-        return None
-    
-    def _save_thumbnail(self, source_path: str, thumbnail_path: str, size: int = 100):
-        """Save a thumbnail of the face"""
-        try:
-            img = cv2.imread(source_path)
-            if img is not None:
-                h, w = img.shape[:2]
-                # Crop to square
-                min_dim = min(h, w)
-                y_start = (h - min_dim) // 2
-                x_start = (w - min_dim) // 2
-                img = img[y_start:y_start+min_dim, x_start:x_start+min_dim]
-                # Resize
-                img = cv2.resize(img, (size, size))
-                cv2.imwrite(thumbnail_path, img)
-        except Exception as e:
-            print(f"Error saving thumbnail: {e}")
-    
-    def _save_whitelist(self):
-        """Persist whitelist to disk"""
-        try:
-            with open(self.whitelist_file, 'wb') as f:
-                pickle.dump(self.whitelisted_faces, f)
-        except Exception as e:
-            print(f"Error saving whitelist: {e}")
-    
-    def _load_whitelist(self):
-        """Load whitelist from disk"""
-        if os.path.exists(self.whitelist_file):
+    """Simple whitelist: add images with names; match detections by face_recognition or ORB."""
+    def __init__(self):
+        self.db: Dict[str, Dict[str, str]] = {}  # name -> {"image": path, "thumb": path}
+        if DB_META.exists():
             try:
-                with open(self.whitelist_file, 'rb') as f:
-                    self.whitelisted_faces = pickle.load(f)
-                print(f"Loaded {len(self.whitelisted_faces)} faces from whitelist")
-            except Exception as e:
-                print(f"Error loading whitelist: {e}")
-                self.whitelisted_faces = {}
+                self.db = json.loads(DB_META.read_text(encoding="utf-8"))
+            except Exception:
+                self.db = {}
 
+    def save(self):
+        try:
+            DB_META.write_text(json.dumps(self.db, indent=2), encoding="utf-8")
+        except Exception:
+            pass
 
-if __name__ == "__main__":
-    print("=" * 60)
-    print("Face Whitelist Module Test")
-    print("=" * 60)
-    
-    whitelist = FaceWhitelist()
-    print(f"\nWhitelist has {len(whitelist.get_whitelisted_names())} faces")
-    print("Protected faces:", whitelist.get_whitelisted_names())
-    
-    print("\n" + "=" * 60)
+    def get_whitelisted_names(self) -> List[str]:
+        return sorted(list(self.db.keys()))
+
+    def get_thumbnail_path(self, name: str) -> Optional[str]:
+        meta = self.db.get(name)
+        if not meta:
+            return None
+        t = meta.get("thumb")
+        return t if t and Path(t).exists() else None
+
+    def add_face(self, image_path: str, name: str) -> bool:
+        p = Path(image_path)
+        if not p.exists():
+            return False
+        name = name.strip()
+        if not name:
+            return False
+        # create thumbnail
+        thumb = DB_DIR / f"{name}_thumb.jpg"
+        try:
+            img = cv2.imread(str(p))
+            if img is None: return False
+            th = cv2.resize(img, (96,96), interpolation=cv2.INTER_AREA)
+            cv2.imwrite(str(thumb), th)
+            self.db[name] = {"image": str(p), "thumb": str(thumb)}
+            self.save()
+            return True
+        except Exception:
+            return False
+
+    def remove_face(self, name: str):
+        if name in self.db:
+            # do not delete originals; thumbnail can be removed optionally
+            self.db.pop(name, None)
+            self.save()
+
+    # ---------- matching ----------
+
+    def _encode_face_fr(self, bgr: np.ndarray, bbox) -> Optional[np.ndarray]:
+        if not _HAS_FR: return None
+        (x, y, w, h) = bbox
+        rgb = bgr[:, :, ::-1]
+        loc = [(y, x+w, y+h, x)]  # top, right, bottom, left
+        try:
+            encs = face_recognition.face_encodings(rgb, known_face_locations=loc, model="small")
+            return encs[0] if encs else None
+        except Exception:
+            return None
+
+    def _cos_sim(self, a: np.ndarray, b: np.ndarray) -> float:
+        if a is None or b is None: return 0.0
+        na = np.linalg.norm(a); nb = np.linalg.norm(b)
+        if na == 0 or nb == 0: return 0.0
+        return float(np.dot(a, b) / (na * nb))
+
+    def _orb_score(self, patchA: np.ndarray, patchB: np.ndarray) -> float:
+        try:
+            orb = cv2.ORB_create(500)
+            kp1, des1 = orb.detectAndCompute(patchA, None)
+            kp2, des2 = orb.detectAndCompute(patchB, None)
+            if des1 is None or des2 is None: return 0.0
+            bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
+            matches = bf.match(des1, des2)
+            if not matches: return 0.0
+            # invert avg distance -> similarity in [0,1] approx
+            avg = sum(m.distance for m in matches) / len(matches)
+            return max(0.0, min(1.0, 1.0 - avg/128.0))
+        except Exception:
+            return 0.0
+
+    def match_detected_faces(self, bgr_img: np.ndarray, bboxes: List[tuple], threshold: float = 0.60):
+        """Return list of dict: {'bbox':(x,y,w,h), 'is_whitelisted':bool, 'matched_name':str|None, 'confidence':float}"""
+        results = []
+        if not bboxes:
+            return results
+        names = list(self.db.keys())
+        if not names:
+            for bb in bboxes:
+                results.append({'bbox': bb, 'is_whitelisted': False, 'matched_name': None, 'confidence': 0.0})
+            return results
+
+        # Prepare whitelist encodings or patches
+        whitelist_encs = {}
+        whitelist_patches = {}
+        for name in names:
+            meta = self.db.get(name, {})
+            img_path = meta.get("image")
+            if not img_path or not Path(img_path).exists():
+                continue
+            img = cv2.imread(img_path)
+            if img is None:
+                continue
+            if _HAS_FR:
+                # naive: detect biggest face and encode once
+                rgb = img[:, :, ::-1]
+                locs = face_recognition.face_locations(rgb, model="hog")
+                if locs:
+                    encs = face_recognition.face_encodings(rgb, known_face_locations=[locs[0]], model="small")
+                    if encs:
+                        whitelist_encs[name] = encs[0]
+                else:
+                    # fallback: center crop thumbnail
+                    h, w = img.shape[:2]
+                    sz = min(h, w) // 2
+                    cy, cx = h//2, w//2
+                    patch = img[cy-sz:cy+sz, cx-sz:cx+sz]
+                    whitelist_patches[name] = patch
+            else:
+                whitelist_patches[name] = img
+
+        for bb in bboxes:
+            x, y, w, h = bb
+            face_patch = bgr_img[y:y+h, x:x+w]
+            best_name = None
+            best_conf = 0.0
+
+            if _HAS_FR and whitelist_encs:
+                det_enc = self._encode_face_fr(bgr_img, bb)
+                if det_enc is not None:
+                    for name, enc in whitelist_encs.items():
+                        sim = self._cos_sim(det_enc, enc)  # cosine in [0,1] approx (face_rec encs aren't unit-norm by default)
+                        if sim > best_conf:
+                            best_conf, best_name = sim, name
+            else:
+                # ORB fallback on grayscale patches
+                det_gray = cv2.cvtColor(face_patch, cv2.COLOR_BGR2GRAY)
+                for name, patch in whitelist_patches.items():
+                    base_gray = cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY)
+                    score = self._orb_score(det_gray, base_gray)
+                    if score > best_conf:
+                        best_conf, best_name = score, name
+
+            is_white = best_conf >= threshold
+            results.append({'bbox': bb, 'is_whitelisted': is_white, 'matched_name': (best_name if is_white else None), 'confidence': best_conf})
+        return results

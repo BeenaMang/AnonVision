@@ -1,176 +1,105 @@
-#DNN-based face detection for AnonVision
-
-
-import cv2
+# dnn_detector.py (YuNet-first, CPU-only; Haar fallback)
+from __future__ import annotations
+from typing import List, Tuple, Optional
+from pathlib import Path
 import os
-import urllib.request
+import cv2
 import numpy as np
 
+BBox = Tuple[int,int,int,int]
+
+_ZOO_URL = "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx"
 
 class DNNFaceDetector:
-    """DNN-based face detector using OpenCV's pre-trained model"""
-    
-    def __init__(self):
-        """Initialize DNN face detector"""
-        self.model_file = None
-        self.config_file = None
+    """YuNet via cv2.FaceDetectorYN or ONNX; falls back to Haar if needed."""
+    def __init__(self, data_dir: str = "data", score_threshold: float = 0.5, nms_threshold: float = 0.3):
+        self.data_dir = data_dir
+        os.makedirs(self.data_dir, exist_ok=True)
+        self.model_path = str(Path(self.data_dir) / "face_detection_yunet_2023mar.onnx")
+        self.score_threshold = float(score_threshold)
+        self.nms_threshold = float(nms_threshold)
+
+        self.detector_yn = None
         self.net = None
-        
-        # Download and load models
-        self._download_models()
-        self._load_model()
-        
-        print("DNN face detector initialized successfully")
-    
-    def _download_models(self):
-        """Download DNN face detection models if not present"""
-        # These are the correct working URLs
-        models = {
-            "res10_300x300_ssd_iter_140000.caffemodel": {
-                "url": "https://github.com/opencv/opencv_3rdparty/raw/dnn_samples_face_detector_20170830/res10_300x300_ssd_iter_140000.caffemodel",
-                "description": "caffe_model"
-            },
-            "deploy.prototxt": {
-                "url": "https://raw.githubusercontent.com/opencv/opencv/master/samples/dnn/face_detector/deploy.prototxt",
-                "description": "config_file"
-            }
-        }
-        
-        data_dir = "data"
-        os.makedirs(data_dir, exist_ok=True)
-        
-        for filename, info in models.items():
-            filepath = os.path.join(data_dir, filename)
-            
-            if not os.path.exists(filepath):
-                print(f"Downloading {info['description']} for DNN detector...")
-                try:
-                    # Add headers to avoid being blocked
-                    req = urllib.request.Request(
-                        info['url'],
-                        headers={'User-Agent': 'Mozilla/5.0'}
-                    )
-                    with urllib.request.urlopen(req) as response, open(filepath, 'wb') as out_file:
-                        out_file.write(response.read())
-                    print(f"Downloaded: {filepath}")
-                except Exception as e:
-                    print(f"Error downloading {filename}: {e}")
-                    print(f"Tried URL: {info['url']}")
-                    raise
-            else:
-                print(f"DNN model already exists: {filepath}")
-            
-            # Store file paths
-            if filename.endswith('.caffemodel'):
-                self.model_file = filepath
-            elif filename.endswith('.prototxt'):
-                self.config_file = filepath
-    
-    def _load_model(self):
-        """Load the DNN model"""
+        self.cascade = None
+
+        # Try YuNet binding first
         try:
-            # Use Caffe model instead of TensorFlow
-            self.net = cv2.dnn.readNetFromCaffe(self.config_file, self.model_file)
-            print("DNN model loaded successfully")
-        except Exception as e:
-            print(f"Error loading DNN model: {e}")
-            raise
-    
-    def detect_faces(self, image_path, confidence_threshold=0.5):
-        """
-        Detect faces using DNN model
-        
-        Args:
-            image_path (str): Path to image file
-            confidence_threshold (float): Minimum confidence for detection (0.0-1.0)
-            
-        Returns:
-            tuple: (image, faces) where faces is list of (x, y, w, h) tuples
-        """
-        # Read image
-        image = cv2.imread(image_path)
-        if image is None:
-            raise ValueError(f"Could not read image: {image_path}")
-        
-        h, w = image.shape[:2]
-        
-        # Create blob from image
-        blob = cv2.dnn.blobFromImage(
-            cv2.resize(image, (300, 300)), 
-            1.0, 
-            (300, 300), 
-            (104.0, 177.0, 123.0)
-        )
-        
-        # Set input and run forward pass
-        self.net.setInput(blob)
-        detections = self.net.forward()
-        
-        # Extract face coordinates
-        faces = []
-        for i in range(detections.shape[2]):
-            confidence = detections[0, 0, i, 2]
-            
-            if confidence > confidence_threshold:
-                # Get bounding box coordinates
-                box = detections[0, 0, i, 3:7] * np.array([w, h, w, h])
-                (x1, y1, x2, y2) = box.astype("int")
-                
-                # Convert to (x, y, w, h) format
-                face_x = max(0, x1)
-                face_y = max(0, y1)
-                face_w = min(w - face_x, x2 - x1)
-                face_h = min(h - face_y, y2 - y1)
-                
-                faces.append((face_x, face_y, face_w, face_h))
-        
-        print(f"DNN detected {len(faces)} face(s) in {os.path.basename(image_path)}")
-        
-        return image, faces
-    
-    def draw_detection_boxes(self, image, faces, color=(0, 255, 0), thickness=2, show_label=True):
-        """
-        Draw rectangles around detected faces
-        Same interface as Haar Cascade detector for compatibility
-        """
-        image_copy = image.copy()
-        
-        for i, (x, y, w, h) in enumerate(faces):
-            # Draw rectangle
-            cv2.rectangle(image_copy, (x, y), (x+w, y+h), color, thickness)
-            
-            # Draw label if requested
-            if show_label:
-                label = f"Face {i+1}"
-                label_y = y - 10 if y - 10 > 10 else y + h + 20
-                
-                (label_width, label_height), baseline = cv2.getTextSize(
-                    label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1
-                )
-                
-                cv2.rectangle(
-                    image_copy,
-                    (x, label_y - label_height - baseline),
-                    (x + label_width, label_y),
-                    color,
-                    -1
-                )
-                
-                cv2.putText(
-                    image_copy,
-                    label,
-                    (x, label_y - baseline),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.5,
-                    (255, 255, 255),
-                    1
-                )
-        
-        return image_copy
+            if not Path(self.model_path).exists():
+                # Best-effort download (user should have internet when running locally)
+                import urllib.request
+                urllib.request.urlretrieve(_ZOO_URL, self.model_path)
+            self.detector_yn = cv2.FaceDetectorYN_create(
+                self.model_path,
+                "",
+                (320, 320),
+                self.score_threshold,
+                self.nms_threshold,
+                5000
+            )
+        except Exception:
+            self.detector_yn = None
 
+        # Fallback: Haar cascade
+        if self.detector_yn is None:
+            try:
+                haar = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+                self.cascade = cv2.CascadeClassifier(haar)
+            except Exception:
+                self.cascade = None
 
-if __name__ == "__main__":
-    # Test DNN detector
-    print("Testing DNN face detector...")
-    detector = DNNFaceDetector()
-    print("DNN detector is ready!")
+        # Force CPU-only / disable OpenCL to avoid cuDNN/OpenCL issues
+        try:
+            if hasattr(cv2, "ocl"):
+                cv2.ocl.setUseOpenCL(False)
+        except Exception:
+            pass
+
+    def set_score_threshold(self, thr: float):
+        self.score_threshold = float(thr)
+        if self.detector_yn is not None:
+            try:
+                self.detector_yn.setScoreThreshold(self.score_threshold)
+            except Exception:
+                pass
+
+    def detect_faces(self, bgr_img: np.ndarray, confidence_threshold: Optional[float] = None) -> Tuple[np.ndarray, List[BBox]]:
+        """Return (input_image, [(x,y,w,h), ...])"""
+        if bgr_img is None or bgr_img.size == 0:
+            return bgr_img, []
+
+        img = bgr_img
+        h, w = img.shape[:2]
+        faces: List[BBox] = []
+        thr = float(confidence_threshold) if confidence_threshold is not None else self.score_threshold
+
+        if self.detector_yn is not None:
+            try:
+                self.detector_yn.setInputSize((w, h))
+                res = self.detector_yn.detect(img)
+                boxes = res[1] if isinstance(res, tuple) and len(res) > 1 else None
+                if boxes is not None:
+                    # boxes: [x, y, w, h, score, ...]
+                    for row in boxes:
+                        x, y, ww, hh, score = int(row[0]), int(row[1]), int(row[2]), int(row[3]), float(row[4])
+                        if score >= thr and ww > 0 and hh > 0:
+                            # clamp box
+                            x = max(0, min(x, w-1)); y = max(0, min(y, h-1))
+                            ww = max(1, min(ww, w - x)); hh = max(1, min(hh, h - y))
+                            faces.append((x, y, ww, hh))
+                    return img, faces
+            except Exception:
+                pass
+
+        # Haar fallback
+        if self.cascade is not None:
+            try:
+                gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+                dets = self.cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(24,24))
+                for (x, y, ww, hh) in dets:
+                    faces.append((int(x), int(y), int(ww), int(hh)))
+                return img, faces
+            except Exception:
+                pass
+
+        return img, faces
