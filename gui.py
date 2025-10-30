@@ -1,12 +1,5 @@
-#!/usr/bin/env python3
-# ============================================
-# GUI Module for AnonVision (Recent Design + Protect Faces)
-# - Tkinter + ttk
-# - YuNet (DNN) default, Haar optional
-# - No MediaPipe
-# - Pre-select faces to protect (not blurred)
-# - Uses utils.resize_image_for_display(max_width, max_height)
-# ============================================
+# GUI Module for AnonVision
+
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
@@ -16,7 +9,7 @@ import cv2
 import numpy as np
 from pathlib import Path
 
-# Silence OpenCV logs and disable OpenCL (avoid noisy loader messages)
+# Silence OpenCV logs and disable OpenCL
 try:
     os.environ.setdefault("OPENCV_LOG_LEVEL", "ERROR")
     if hasattr(cv2, "utils") and hasattr(cv2.utils, "logging"):
@@ -38,16 +31,17 @@ class AnonVisionGUI:
         # ---- root/window ----
         self.root = root
         self.root.title("AnonVision — Face Privacy Protection")
-        self.root.geometry("1180x740")
-        self.root.minsize(980, 640)
+        self.root.geometry("1280x780")
+        self.root.minsize(1080, 680)
 
-        # ---- basic dark-ish ttk theme (simple) ----
+        # ---- basic dark-ish ttk theme ----
         self._init_style()
 
         # ---- state ----
         self.current_image_path = None
         self.pil_image = None          # PIL.Image (original)
         self.img_bgr = None            # numpy BGR (for detection)
+        self.original_bgr = None       # keep pristine original
         self.detected_faces = []       # list of (x, y, w, h)
         self.photo_image = None        # Tk image for display
 
@@ -66,21 +60,33 @@ class AnonVisionGUI:
             self.dnn = None
 
         try:
-            self.haar = FaceDetector()  # has .face_cascade
+            self.haar = FaceDetector()
         except Exception as e:
             print(f"[WARN] Haar unavailable: {e}")
             self.haar = None
 
-        # ---- settings (tk variables) ----
-        self.detection_method = tk.StringVar(value="dnn" if self.dnn else "haar")  # 'dnn' or 'haar'
+        # ---- detection settings ----
+        self.detection_method = tk.StringVar(value="dnn" if self.dnn else "haar")
         self.dnn_confidence = tk.DoubleVar(value=0.50)
         self.scale_factor = tk.DoubleVar(value=1.10)
         self.min_neighbors = tk.IntVar(value=5)
         self.min_size = tk.IntVar(value=30)
         self.show_boxes = tk.BooleanVar(value=True)
 
-        # anonymization settings
-        self.blur_k = tk.IntVar(value=25)  # must be odd
+        # ---- ANONYMIZATION SETTINGS (STRONG DEFAULTS) ----
+        # Method: blur, pixelate, blackout
+        self.anon_method = tk.StringVar(value="blur")
+        
+        # Blur settings (MUCH STRONGER)
+        self.blur_strength = tk.IntVar(value=71)  # Very strong blur kernel
+        self.blur_passes = tk.IntVar(value=6)     # Multiple passes for complete anonymization
+        
+        # Pixelation settings
+        self.pixel_size = tk.IntVar(value=20)     # Large blocks
+        
+        # Coverage settings
+        self.edge_feather = tk.IntVar(value=25)   # Slight feathering
+        self.region_expansion = tk.IntVar(value=35)  # Expand 35% to cover hair/neck
 
         # ---- build UI ----
         self._build_ui()
@@ -116,6 +122,7 @@ class AnonVisionGUI:
         left.columnconfigure(0, weight=1)
 
         self._build_top_bar(left)          # file + actions
+        self._build_anon_settings(left)    # anonymization controls
         self._build_faces_panel(left)      # detected faces (protect selection)
         self._build_advanced(left)         # advanced options (collapsible)
         self._build_status(left)           # status bar under controls
@@ -146,12 +153,162 @@ class AnonVisionGUI:
                         variable=self.detection_method,
                         command=self._on_method_change).grid(row=2, column=3, padx=4, sticky="w")
 
+    def _build_anon_settings(self, parent):
+        """Anonymization method and settings"""
+        anon_frame = ttk.LabelFrame(parent, text="🛡 Anonymization Method", padding=10)
+        anon_frame.grid(row=1, column=0, sticky="ew", pady=(8, 6))
+        anon_frame.columnconfigure(1, weight=1)
+
+        # Method selection
+        row = 0
+        method_frame = ttk.Frame(anon_frame)
+        method_frame.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        
+        ttk.Radiobutton(
+            method_frame,
+            text="Heavy Blur",
+            variable=self.anon_method,
+            value="blur",
+            command=self._update_method_ui
+        ).pack(side="left", padx=4)
+        
+        ttk.Radiobutton(
+            method_frame,
+            text="Pixelate",
+            variable=self.anon_method,
+            value="pixelate",
+            command=self._update_method_ui
+        ).pack(side="left", padx=4)
+        
+        ttk.Radiobutton(
+            method_frame,
+            text="Black Box",
+            variable=self.anon_method,
+            value="blackout",
+            command=self._update_method_ui
+        ).pack(side="left", padx=4)
+
+        # Settings container (switches based on method)
+        self.settings_container = ttk.Frame(anon_frame)
+        self.settings_container.grid(row=1, column=0, columnspan=2, sticky="ew")
+        
+        # BLUR SETTINGS
+        self.blur_settings = ttk.Frame(self.settings_container)
+        
+        ttk.Label(self.blur_settings, text="Blur Strength:").grid(row=0, column=0, sticky="w", pady=2)
+        blur_frame = ttk.Frame(self.blur_settings)
+        blur_frame.grid(row=0, column=1, sticky="ew", padx=(10, 0))
+        blur_frame.columnconfigure(0, weight=1)
+        
+        self.blur_scale = ttk.Scale(
+            blur_frame,
+            from_=41,
+            to=99,
+            orient="horizontal",
+            variable=self.blur_strength,
+            command=lambda x: self.blur_strength.set(int(float(x)) // 2 * 2 + 1)
+        )
+        self.blur_scale.grid(row=0, column=0, sticky="ew")
+        self.blur_label = ttk.Label(blur_frame, text="71")
+        self.blur_label.grid(row=0, column=1, padx=(8, 0))
+        self.blur_strength.trace('w', lambda *args: self.blur_label.config(text=str(self.blur_strength.get())))
+        
+        ttk.Label(self.blur_settings, text="Blur Passes:").grid(row=1, column=0, sticky="w", pady=2)
+        passes_frame = ttk.Frame(self.blur_settings)
+        passes_frame.grid(row=1, column=1, sticky="ew", padx=(10, 0))
+        passes_frame.columnconfigure(0, weight=1)
+        
+        self.passes_scale = ttk.Scale(
+            passes_frame,
+            from_=3,
+            to=10,
+            orient="horizontal",
+            variable=self.blur_passes
+        )
+        self.passes_scale.grid(row=0, column=0, sticky="ew")
+        self.passes_label = ttk.Label(passes_frame, text="6")
+        self.passes_label.grid(row=0, column=1, padx=(8, 0))
+        self.blur_passes.trace('w', lambda *args: self.passes_label.config(text=str(int(self.blur_passes.get()))))
+        
+        # PIXELATE SETTINGS
+        self.pixel_settings = ttk.Frame(self.settings_container)
+        
+        ttk.Label(self.pixel_settings, text="Pixel Block Size:").grid(row=0, column=0, sticky="w", pady=2)
+        pixel_frame = ttk.Frame(self.pixel_settings)
+        pixel_frame.grid(row=0, column=1, sticky="ew", padx=(10, 0))
+        pixel_frame.columnconfigure(0, weight=1)
+        
+        self.pixel_scale = ttk.Scale(
+            pixel_frame,
+            from_=8,
+            to=50,
+            orient="horizontal",
+            variable=self.pixel_size
+        )
+        self.pixel_scale.grid(row=0, column=0, sticky="ew")
+        self.pixel_label = ttk.Label(pixel_frame, text="20")
+        self.pixel_label.grid(row=0, column=1, padx=(8, 0))
+        self.pixel_size.trace('w', lambda *args: self.pixel_label.config(text=str(int(self.pixel_size.get()))))
+        
+        # COMMON SETTINGS
+        ttk.Separator(anon_frame, orient="horizontal").grid(row=2, column=0, columnspan=2, sticky="ew", pady=8)
+        
+        ttk.Label(anon_frame, text="Edge Softness:").grid(row=3, column=0, sticky="w")
+        feather_frame = ttk.Frame(anon_frame)
+        feather_frame.grid(row=3, column=1, sticky="ew", padx=(10, 0))
+        feather_frame.columnconfigure(0, weight=1)
+        
+        ttk.Scale(
+            feather_frame,
+            from_=0,
+            to=50,
+            orient="horizontal",
+            variable=self.edge_feather
+        ).grid(row=0, column=0, sticky="ew")
+        self.feather_label = ttk.Label(feather_frame, text="25%")
+        self.feather_label.grid(row=0, column=1, padx=(8, 0))
+        self.edge_feather.trace('w', lambda *args: self.feather_label.config(text=f"{self.edge_feather.get()}%"))
+        
+        ttk.Label(anon_frame, text="Coverage Area:").grid(row=4, column=0, sticky="w")
+        expand_frame = ttk.Frame(anon_frame)
+        expand_frame.grid(row=4, column=1, sticky="ew", padx=(10, 0))
+        expand_frame.columnconfigure(0, weight=1)
+        
+        ttk.Scale(
+            expand_frame,
+            from_=10,
+            to=60,
+            orient="horizontal",
+            variable=self.region_expansion
+        ).grid(row=0, column=0, sticky="ew")
+        self.expand_label = ttk.Label(expand_frame, text="35%")
+        self.expand_label.grid(row=0, column=1, padx=(8, 0))
+        self.region_expansion.trace('w', lambda *args: self.expand_label.config(text=f"{self.region_expansion.get()}%"))
+        
+        # Show initial method settings
+        self._update_method_ui()
+
+    def _update_method_ui(self):
+        """Show/hide settings based on selected anonymization method"""
+        # Hide all
+        self.blur_settings.pack_forget()
+        self.pixel_settings.pack_forget()
+        
+        # Show relevant
+        method = self.anon_method.get()
+        if method == "blur":
+            self.blur_settings.pack(fill="x")
+        elif method == "pixelate":
+            self.pixel_settings.pack(fill="x")
+        # blackout has no extra settings
+
     def _build_faces_panel(self, parent):
-        self.faces_box = ttk.LabelFrame(parent, text="Detected Faces — tick to Protect (won't be blurred)", padding=8)
-        self.faces_box.grid(row=1, column=0, sticky="nsew", pady=(8, 6))
+        self.faces_box = ttk.LabelFrame(parent, text="Detected Faces — tick to Protect (won't be anonymized)", padding=8)
+        self.faces_box.grid(row=2, column=0, sticky="nsew", pady=(8, 6))
         self.faces_box.columnconfigure(0, weight=1)
+        
         # scrollable area
-        self.faces_canvas = tk.Canvas(self.faces_box, bg="#1f1f23", highlightthickness=0, height=220)
+        self.faces_canvas = tk.Canvas(self.faces_box, bg="#1f1f23", highlightthickness=0, height=180)
         self.faces_scroll = ttk.Scrollbar(self.faces_box, orient="vertical", command=self.faces_canvas.yview)
         self.faces_inner = ttk.Frame(self.faces_canvas)
         self.faces_inner.bind("<Configure>", lambda e: self.faces_canvas.configure(scrollregion=self.faces_canvas.bbox("all")))
@@ -173,13 +330,13 @@ class AnonVisionGUI:
 
     def _build_advanced(self, parent):
         cont = ttk.Frame(parent)
-        cont.grid(row=2, column=0, sticky="ew")
+        cont.grid(row=3, column=0, sticky="ew")
 
         self._adv_open = tk.BooleanVar(value=False)
-        self.adv_btn = ttk.Button(cont, text="▶ Show Advanced Settings", command=self._toggle_advanced)
+        self.adv_btn = ttk.Button(cont, text="▶ Show Detection Settings", command=self._toggle_advanced)
         self.adv_btn.pack(fill="x", pady=(2, 0))
 
-        self.adv_frame = ttk.LabelFrame(cont, text="Advanced Settings", padding=10)
+        self.adv_frame = ttk.LabelFrame(cont, text="Detection Settings", padding=10)
 
         # DNN
         dnn_row = ttk.Frame(self.adv_frame)
@@ -198,12 +355,6 @@ class AnonVisionGUI:
         ttk.Label(haar, text="Min Size(px):").grid(row=0, column=4, sticky="w", padx=(12, 0))
         ttk.Spinbox(haar, from_=10, to=200, increment=5, textvariable=self.min_size, width=6).grid(row=0, column=5, padx=6)
 
-        # Blur strength
-        blur = ttk.Frame(self.adv_frame)
-        blur.pack(fill="x", pady=(10, 2))
-        ttk.Label(blur, text="Blur (odd kernel):").pack(side="left")
-        ttk.Spinbox(blur, from_=5, to=51, increment=2, textvariable=self.blur_k, width=6).pack(side="left", padx=6)
-
         # re-detect button
         ttk.Button(self.adv_frame, text="Re-detect with current settings", command=self._redetect).pack(pady=8)
 
@@ -211,7 +362,7 @@ class AnonVisionGUI:
 
     def _build_status(self, parent):
         s = ttk.Frame(parent)
-        s.grid(row=3, column=0, sticky="ew", pady=(6, 0))
+        s.grid(row=4, column=0, sticky="ew", pady=(6, 0))
         self.status_label = ttk.Label(s, text="Ready", anchor="w")
         self.status_label.pack(fill="x")
 
@@ -256,7 +407,8 @@ class AnonVisionGUI:
         try:
             self.current_image_path = path
             self.pil_image = Image.open(path).convert("RGB")
-            self.img_bgr = cv2.imread(path)  # for detection
+            self.img_bgr = cv2.imread(path)
+            self.original_bgr = self.img_bgr.copy()  # Keep pristine original
             self.detected_faces = []
             self.face_vars = []
             self.face_thumbs = []
@@ -278,7 +430,6 @@ class AnonVisionGUI:
 
         try:
             if method == "dnn" and self.dnn:
-                # Prefer array input; change to path if your detector expects it
                 _, faces = self.dnn.detect_faces(self.img_bgr, confidence_threshold=float(self.dnn_confidence.get()))
             else:
                 if not self.haar or not hasattr(self.haar, "face_cascade"):
@@ -296,39 +447,124 @@ class AnonVisionGUI:
             faces = []
 
         self.detected_faces = [(int(x), int(y), int(w), int(h)) for (x, y, w, h) in faces]
-        self._build_face_checklist()  # create protect checkboxes + thumbs
+        
+        # Reset to original after detection
+        self.img_bgr = self.original_bgr.copy()
+        
+        self._build_face_checklist()
         self._refresh_display()
         self._set_status(f"Detected: {len(self.detected_faces)} face(s)")
 
     def apply_anonymization(self):
-        """Blur all faces that are NOT protected (unchecked)."""
-        if self.img_bgr is None or not self.detected_faces:
+        """Apply selected anonymization method to non-protected faces"""
+        if self.original_bgr is None or not self.detected_faces:
             messagebox.showinfo("Nothing to do", "Load an image and detect faces first.")
             return
 
-        # make sure blur kernel is odd
-        k = int(self.blur_k.get())
-        if k % 2 == 0:
-            k += 1
+        method = self.anon_method.get()
+        self.img_bgr = self._anonymize_faces(self.original_bgr.copy())
+        self._refresh_display()
 
-        out = self.img_bgr.copy()
+    def _anonymize_faces(self, image):
+        """
+        Apply strong anonymization to unprotected faces.
+        Methods: Heavy blur, Pixelation, Black boxes
+        """
+        out = image.copy()
+        method = self.anon_method.get()
+        
+        feather_pct = self.edge_feather.get() / 100.0
+        expansion_pct = self.region_expansion.get() / 100.0
+        
         protected = 0
-        blurred = 0
+        anonymized = 0
 
         for idx, (x, y, w, h) in enumerate(self.detected_faces):
             is_protected = (idx < len(self.face_vars)) and bool(self.face_vars[idx].get())
             if is_protected:
                 protected += 1
                 continue
-            # blur this face
-            roi = out[y:y+h, x:x+w]
-            out[y:y+h, x:x+w] = cv2.GaussianBlur(roi, (k, k), 0)
-            blurred += 1
+            
+            # Calculate expanded region
+            ext_x = max(0, int(x - w * expansion_pct))
+            ext_y = max(0, int(y - h * expansion_pct))
+            ext_w = min(image.shape[1] - ext_x, int(w * (1 + 2 * expansion_pct)))
+            ext_h = min(image.shape[0] - ext_y, int(h * (1 + 2 * expansion_pct)))
+            
+            # Extract region
+            roi = out[ext_y:ext_y+ext_h, ext_x:ext_x+ext_w].copy()
+            
+            if roi.size == 0:
+                continue
+            
+            # Apply anonymization method
+            if method == "blur":
+                # HEAVY BLUR - multiple passes with large kernel
+                anonymized_roi = roi.copy()
+                kernel = self.blur_strength.get()
+                if kernel % 2 == 0:
+                    kernel += 1
+                passes = int(self.blur_passes.get())
+                
+                for _ in range(passes):
+                    anonymized_roi = cv2.GaussianBlur(anonymized_roi, (kernel, kernel), 0)
+                
+            elif method == "pixelate":
+                # PIXELATION
+                pixel_size = int(self.pixel_size.get())
+                h_roi, w_roi = roi.shape[:2]
+                
+                # Shrink
+                temp = cv2.resize(roi, (w_roi // pixel_size, h_roi // pixel_size), interpolation=cv2.INTER_LINEAR)
+                # Expand back (nearest neighbor for blocky effect)
+                anonymized_roi = cv2.resize(temp, (w_roi, h_roi), interpolation=cv2.INTER_NEAREST)
+                
+            else:  # blackout
+                # SOLID BLACK BOX
+                anonymized_roi = np.zeros_like(roi)
+            
+            # Apply edge feathering if enabled (except for blackout)
+            if feather_pct > 0 and method != "blackout":
+                mask = self._create_feather_mask(ext_h, ext_w, feather_pct)
+                mask_3ch = cv2.merge([mask, mask, mask])
+                blended = (anonymized_roi * mask_3ch + roi * (1 - mask_3ch)).astype(np.uint8)
+                out[ext_y:ext_y+ext_h, ext_x:ext_x+ext_w] = blended
+            else:
+                out[ext_y:ext_y+ext_h, ext_x:ext_x+ext_w] = anonymized_roi
+            
+            anonymized += 1
+        
+        method_names = {
+            "blur": "Heavy Blur",
+            "pixelate": "Pixelation",
+            "blackout": "Black Box"
+        }
+        
+        self._set_status(f"✓ Anonymized: {anonymized} | Protected: {protected} | Method: {method_names[method]}")
+        messagebox.showinfo(
+            "Complete",
+            f"✓ Anonymized: {anonymized} face(s)\n"
+            f"✓ Protected: {protected} face(s)\n"
+            f"✓ Method: {method_names[method]}"
+        )
+        
+        return out
 
-        self.img_bgr = out
-        # keep original PIL the same; canvas renders from img_bgr anyway
-        self._refresh_display()
-        self._set_status(f"Anonymized — Blurred: {blurred} | Protected: {protected}")
+    def _create_feather_mask(self, height, width, feather_pct):
+        """Create gradient mask for edge feathering"""
+        y_coords = np.linspace(-1, 1, height)
+        x_coords = np.linspace(-1, 1, width)
+        x_grid, y_grid = np.meshgrid(x_coords, y_coords)
+        
+        dist_from_center = np.sqrt(x_grid**2 + y_grid**2)
+        max_dist = np.sqrt(2)
+        dist_normalized = dist_from_center / max_dist
+        
+        feather_start = 1.0 - feather_pct
+        mask = np.clip((feather_start - dist_normalized) / feather_pct + 1, 0, 1)
+        mask = cv2.GaussianBlur(mask.astype(np.float32), (21, 21), 0)
+        
+        return mask
 
     def save_image(self):
         if self.img_bgr is None:
@@ -337,8 +573,8 @@ class AnonVisionGUI:
 
         path = filedialog.asksaveasfilename(
             title="Save Image",
-            defaultextension=".jpg",
-            filetypes=[("JPEG", "*.jpg"), ("PNG", "*.png"), ("All files", "*.*")]
+            defaultextension=".png",
+            filetypes=[("PNG (lossless)", "*.png"), ("JPEG", "*.jpg"), ("All files", "*.*")]
         )
         if not path:
             return
@@ -375,18 +611,16 @@ class AnonVisionGUI:
         )
 
     def _refresh_display(self):
-        """Refresh image rendering on the canvas (no re-detection)."""
+        """Refresh image rendering on canvas"""
         if self.pil_image is None:
             self._draw_placeholder()
             return
 
-        # Determine target box inside canvas
         c_w = max(200, self.canvas.winfo_width())
         c_h = max(200, self.canvas.winfo_height())
         max_w = min(c_w - 20, 1600)
         max_h = min(c_h - 20, 1600)
 
-        # Choose image to render (with or without boxes)
         bgr_to_show = self.img_bgr.copy() if self.img_bgr is not None else None
         if bgr_to_show is None:
             self._draw_placeholder()
@@ -394,9 +628,20 @@ class AnonVisionGUI:
 
         if self.show_boxes.get() and self.detected_faces:
             for idx, (x, y, w, h) in enumerate(self.detected_faces):
-                # green if protected, red if will blur
                 is_protected = (idx < len(self.face_vars)) and bool(self.face_vars[idx].get())
                 color = (16, 185, 129) if is_protected else (239, 68, 68)
+                
+                # Show extended region
+                expansion_pct = self.region_expansion.get() / 100.0
+                if expansion_pct > 0 and not is_protected:
+                    ext_x = max(0, int(x - w * expansion_pct))
+                    ext_y = max(0, int(y - h * expansion_pct))
+                    ext_w = min(bgr_to_show.shape[1] - ext_x, int(w * (1 + 2 * expansion_pct)))
+                    ext_h = min(bgr_to_show.shape[0] - ext_y, int(h * (1 + 2 * expansion_pct)))
+                    
+                    cv2.rectangle(bgr_to_show, (ext_x, ext_y), (ext_x + ext_w, ext_y + ext_h), 
+                                (128, 128, 128), 1)
+                
                 cv2.rectangle(bgr_to_show, (x, y), (x + w, y + h), color, 2)
 
         rgb = cv2.cvtColor(bgr_to_show, cv2.COLOR_BGR2RGB)
@@ -405,7 +650,6 @@ class AnonVisionGUI:
         disp = resize_image_for_display(pil, max_width=max_w, max_height=max_h, fill_background=(42, 42, 46))
         self.photo_image = ImageTk.PhotoImage(disp)
 
-        # Clear and draw
         self.canvas.delete("all")
         self.canvas.create_image(c_w // 2, c_h // 2, image=self.photo_image, anchor="center")
 
@@ -422,10 +666,10 @@ class AnonVisionGUI:
 
     def _show_hide_advanced(self):
         if self._adv_open.get():
-            self.adv_btn.config(text="▼ Hide Advanced Settings")
+            self.adv_btn.config(text="▼ Hide Detection Settings")
             self.adv_frame.pack(fill="x", pady=(6, 0))
         else:
-            self.adv_btn.config(text="▶ Show Advanced Settings")
+            self.adv_btn.config(text="▶ Show Detection Settings")
             self.adv_frame.pack_forget()
 
     def _redetect(self):
@@ -441,7 +685,7 @@ class AnonVisionGUI:
     # ---------- Faces checklist (protect) ----------
 
     def _refresh_faces_list(self):
-        """Clear faces panel."""
+        """Clear faces panel"""
         for w in self.faces_inner.winfo_children():
             w.destroy()
         self.face_vars = []
@@ -449,8 +693,7 @@ class AnonVisionGUI:
         ttk.Label(self.faces_inner, text="No faces yet — click Detect").pack(anchor="w")
 
     def _build_face_checklist(self):
-        """Populate the faces panel with thumbnails + protect checkboxes."""
-        # clear
+        """Populate faces panel with thumbnails + protect checkboxes"""
         for w in self.faces_inner.winfo_children():
             w.destroy()
         self.face_vars = []
@@ -460,12 +703,11 @@ class AnonVisionGUI:
             ttk.Label(self.faces_inner, text="No faces found").pack(anchor="w")
             return
 
-        # one row per face
         for idx, (x, y, w, h) in enumerate(self.detected_faces):
             row = ttk.Frame(self.faces_inner)
             row.pack(fill="x", pady=4)
 
-            # thumbnail (crop + resize)
+            # thumbnail
             try:
                 x0, y0 = max(0, x), max(0, y)
                 x1, y1 = min(self.img_bgr.shape[1], x + w), min(self.img_bgr.shape[0], y + h)
@@ -475,14 +717,14 @@ class AnonVisionGUI:
                 thumb_rgb = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2RGB)
                 thumb_pil = Image.fromarray(thumb_rgb).resize((64, 64), Image.LANCZOS)
                 thumb_tk = ImageTk.PhotoImage(thumb_pil)
-                self.face_thumbs.append(thumb_tk)  # keep ref
+                self.face_thumbs.append(thumb_tk)
                 lbl = ttk.Label(row, image=thumb_tk)
                 lbl.image = thumb_tk
                 lbl.pack(side="left", padx=(0, 8))
             except Exception:
                 ttk.Label(row, text="[face]").pack(side="left", padx=(0, 8))
 
-            var = tk.BooleanVar(value=False)  # unchecked = will blur; checked = protect
+            var = tk.BooleanVar(value=False)
             self.face_vars.append(var)
             cb = ttk.Checkbutton(row, text=f"Face {idx+1} — Protect", variable=var, command=self._refresh_display)
             cb.pack(side="left")
@@ -501,7 +743,7 @@ class AnonVisionGUI:
 # -------- entry --------
 def main():
     root = tk.Tk()
-    # High-DPI awareness (Windows best-effort)
+    # High-DPI awareness (Windows)
     try:
         from ctypes import windll
         windll.shcore.SetProcessDpiAwareness(1)
