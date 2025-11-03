@@ -1,4 +1,4 @@
-# utils.py (merged, MediaPipe-free)
+# utils.py 
 from __future__ import annotations
 from typing import Tuple, Optional, Union, Iterable, List, Dict
 from pathlib import Path
