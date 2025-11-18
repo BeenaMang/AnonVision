@@ -1,757 +1,1193 @@
-# GUI Module for AnonVision
-
+#!/usr/bin/env python3
+"""
+AnonVision Professional - Modern Three-Panel Interface
+YuNet Only Version (No MediaPipe)
+"""
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
-from PIL import Image, ImageTk
-import os
+from PIL import Image, ImageTk, ImageDraw, ImageFilter
 import cv2
 import numpy as np
+import os
 from pathlib import Path
+from typing import List, Tuple, Optional, Dict
+import time
+import sys
 
-# Silence OpenCV logs and disable OpenCL
+# Silence OpenCV warnings
+os.environ["OPENCV_LOG_LEVEL"] = "ERROR"
+cv2.setUseOptimized(True)
+
+# Import required modules with proper error handling
 try:
-    os.environ.setdefault("OPENCV_LOG_LEVEL", "ERROR")
-    if hasattr(cv2, "utils") and hasattr(cv2.utils, "logging"):
-        cv2.utils.logging.setLogLevel(cv2.utils.logging.LOG_LEVEL_SILENT)
-    if hasattr(cv2, "ocl"):
-        cv2.ocl.setUseOpenCL(False)
-except Exception:
-    pass
+    from utils import validate_image_path
+except ImportError:
+    print("WARNING: utils.py not found - image validation disabled")
+    def validate_image_path(path):
+        return os.path.isfile(path)
 
-from utils import validate_image_path, resize_image_for_display
-from dnn_detector import DNNFaceDetector
-from face_detector import FaceDetector  # Haar fallback
+try:
+    from dnn_detector import DNNFaceDetector
+except ImportError:
+    print("ERROR: dnn_detector.py not found - YuNet detector unavailable")
+    DNNFaceDetector = None
 
-
-class AnonVisionGUI:
-    """Main GUI class for AnonVision application"""
-
-    def __init__(self, root: tk.Tk):
-        # ---- root/window ----
-        self.root = root
-        self.root.title("AnonVision — Face Privacy Protection")
-        self.root.geometry("1280x780")
-        self.root.minsize(1080, 680)
-
-        # ---- basic dark-ish ttk theme ----
-        self._init_style()
-
-        # ---- state ----
-        self.current_image_path = None
-        self.pil_image = None          # PIL.Image (original)
-        self.img_bgr = None            # numpy BGR (for detection)
-        self.original_bgr = None       # keep pristine original
-        self.detected_faces = []       # list of (x, y, w, h)
-        self.photo_image = None        # Tk image for display
-
-        # protect selections (index-based)
-        self.face_vars = []            # list[tk.BooleanVar], one per detected face
-        self.face_thumbs = []          # list[ImageTk.PhotoImage] to keep refs
-
-        # ---- detectors ----
-        self.haar = None
-        self.dnn = None
-
-        try:
-            self.dnn = DNNFaceDetector(score_threshold=0.5)
-        except Exception as e:
-            print(f"[WARN] YuNet/DNN unavailable: {e}")
-            self.dnn = None
-
-        try:
-            self.haar = FaceDetector()
-        except Exception as e:
-            print(f"[WARN] Haar unavailable: {e}")
-            self.haar = None
-
-        # ---- detection settings ----
-        self.detection_method = tk.StringVar(value="dnn" if self.dnn else "haar")
-        self.dnn_confidence = tk.DoubleVar(value=0.50)
-        self.scale_factor = tk.DoubleVar(value=1.10)
-        self.min_neighbors = tk.IntVar(value=5)
-        self.min_size = tk.IntVar(value=30)
-        self.show_boxes = tk.BooleanVar(value=True)
-
-        # ---- ANONYMIZATION SETTINGS (STRONG DEFAULTS) ----
-        # Method: blur, pixelate, blackout
-        self.anon_method = tk.StringVar(value="blur")
-        
-        # Blur settings (MUCH STRONGER)
-        self.blur_strength = tk.IntVar(value=71)  # Very strong blur kernel
-        self.blur_passes = tk.IntVar(value=6)     # Multiple passes for complete anonymization
-        
-        # Pixelation settings
-        self.pixel_size = tk.IntVar(value=20)     # Large blocks
-        
-        # Coverage settings
-        self.edge_feather = tk.IntVar(value=25)   # Slight feathering
-        self.region_expansion = tk.IntVar(value=35)  # Expand 35% to cover hair/neck
-
-        # ---- build UI ----
-        self._build_ui()
-        self._set_status("Ready — load an image to begin")
-
-    # ---------------- UI ----------------
-
-    def _init_style(self):
-        """Minimal dark-ish ttk styling."""
-        style = ttk.Style()
-        try:
-            style.theme_use("clam")
-        except Exception:
+try:
+    from face_whitelist import FaceWhitelist
+except ImportError:
+    print("WARNING: face_whitelist.py not found - whitelist features disabled")
+    class FaceWhitelist:
+        def __init__(self):
             pass
-        style.configure("TFrame", background="#18181B")
-        style.configure("TLabel", background="#18181B", foreground="#E5E7EB")
-        style.configure("TLabelframe", background="#18181B", foreground="#E5E7EB")
-        style.configure("TLabelframe.Label", background="#18181B", foreground="#E5E7EB")
-        style.configure("TButton", background="#27272A", foreground="#E5E7EB")
-        style.configure("TCheckbutton", background="#18181B", foreground="#E5E7EB")
-        style.configure("TRadiobutton", background="#18181B", foreground="#E5E7EB")
-        style.configure("TSeparator", background="#3A3A3F")
 
-    def _build_ui(self):
-        # overall grid: left panel (controls) + right main (image)
-        self.root.columnconfigure(0, weight=0)
-        self.root.columnconfigure(1, weight=1)
-        self.root.rowconfigure(0, weight=1)
 
-        # LEFT: control panel
-        left = ttk.Frame(self.root, padding=10)
-        left.grid(row=0, column=0, sticky="nsw")
-        left.columnconfigure(0, weight=1)
+# ============================================================================
+# PROFESSIONAL DESIGN SYSTEM
+# ============================================================================
 
-        self._build_top_bar(left)          # file + actions
-        self._build_anon_settings(left)    # anonymization controls
-        self._build_faces_panel(left)      # detected faces (protect selection)
-        self._build_advanced(left)         # advanced options (collapsible)
-        self._build_status(left)           # status bar under controls
-
-        # RIGHT: image area
-        self._build_image_area()
-
-    def _build_top_bar(self, parent):
-        wrap = ttk.LabelFrame(parent, text="Controls", padding=8)
-        wrap.grid(row=0, column=0, sticky="ew")
-        wrap.columnconfigure(10, weight=1)
-
-        ttk.Button(wrap, text="📁 Select Image", command=self.select_image).grid(row=0, column=0, padx=4, pady=4, sticky="ew")
-        ttk.Button(wrap, text="🔍 Detect", command=self.detect_faces).grid(row=0, column=1, padx=4, pady=4, sticky="ew")
-        ttk.Button(wrap, text="🛡 Apply Anonymization", command=self.apply_anonymization).grid(row=0, column=2, padx=4, pady=4, sticky="ew")
-        ttk.Button(wrap, text="💾 Save Result", command=self.save_image).grid(row=0, column=3, padx=4, pady=4, sticky="ew")
-
-        ttk.Separator(wrap, orient="horizontal").grid(row=1, column=0, columnspan=4, sticky="ew", pady=(6, 4))
-
-        ttk.Checkbutton(wrap, text="Show boxes", variable=self.show_boxes, command=self._refresh_display)\
-            .grid(row=2, column=0, padx=4, pady=2, sticky="w")
-
-        ttk.Label(wrap, text="Method:").grid(row=2, column=1, sticky="e")
-        ttk.Radiobutton(wrap, text="DNN (YuNet)", value="dnn",
-                        variable=self.detection_method,
-                        command=self._on_method_change).grid(row=2, column=2, padx=(4, 0), sticky="w")
-        ttk.Radiobutton(wrap, text="Haar", value="haar",
-                        variable=self.detection_method,
-                        command=self._on_method_change).grid(row=2, column=3, padx=4, sticky="w")
-
-    def _build_anon_settings(self, parent):
-        """Anonymization method and settings"""
-        anon_frame = ttk.LabelFrame(parent, text="🛡 Anonymization Method", padding=10)
-        anon_frame.grid(row=1, column=0, sticky="ew", pady=(8, 6))
-        anon_frame.columnconfigure(1, weight=1)
-
-        # Method selection
-        row = 0
-        method_frame = ttk.Frame(anon_frame)
-        method_frame.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+class ProDesign:
+    """Professional design system inspired by modern video editing apps"""
+    
+    # Main Colors (Dark Theme)
+    BG_DARKEST = '#0A0A0B'      # Main background
+    BG_DARKER = '#141416'       # Panel backgrounds
+    BG_DARK = '#1C1C1F'         # Sub-panels
+    BG_MEDIUM = '#252528'       # Elevated surfaces
+    BG_LIGHT = '#2D2D31'        # Hover states
+    BG_LIGHTER = '#37373B'      # Active states
+    
+    # Accent Colors
+    ACCENT_BLUE = '#4A9EFF'     # Primary actions
+    ACCENT_GREEN = '#4ADE80'    # Success/Protected
+    ACCENT_RED = '#F87171'      # Danger/Anonymize
+    ACCENT_PURPLE = '#A78BFA'   # Special features
+    ACCENT_YELLOW = '#FBBF24'   # Warnings
+    
+    # Text Colors
+    TEXT_PRIMARY = '#FFFFFF'    # Main text
+    TEXT_SECONDARY = '#B4B4B8'  # Secondary text
+    TEXT_TERTIARY = '#7C7C82'   # Disabled/hints
+    TEXT_ACCENT = '#4A9EFF'     # Links/highlights
+    
+    # Borders
+    BORDER_SUBTLE = '#28282C'   # Panel borders
+    BORDER_DEFAULT = '#37373B'  # Input borders
+    BORDER_FOCUS = '#4A9EFF'    # Focused inputs
+    
+    # Fonts
+    FONT_BRAND = ('Segoe UI', 18, 'bold')
+    FONT_HEADING = ('Segoe UI', 13, 'bold')
+    FONT_SUBHEADING = ('Segoe UI', 11, 'bold')
+    FONT_BODY = ('Segoe UI', 10)
+    FONT_SMALL = ('Segoe UI', 9)
+    FONT_MONO = ('Consolas', 10)
+    
+    # Spacing & Sizing
+    SIDEBAR_WIDTH = 260
+    PROPERTIES_WIDTH = 320
+    TOOLBAR_HEIGHT = 48
+    STATUS_HEIGHT = 28
+    CORNER_RADIUS = 6
+    
+    @classmethod
+    def apply_theme(cls, root):
+        """Apply professional theme to root window"""
+        style = ttk.Style(root)
+        style.theme_use('clam')
         
-        ttk.Radiobutton(
-            method_frame,
-            text="Heavy Blur",
-            variable=self.anon_method,
-            value="blur",
-            command=self._update_method_ui
-        ).pack(side="left", padx=4)
+        # Configure ttk widgets
+        style.configure('Pro.TFrame', background=cls.BG_DARKER, relief='flat')
+        style.configure('Panel.TFrame', background=cls.BG_DARK, relief='flat', borderwidth=1)
+        style.configure('Toolbar.TFrame', background=cls.BG_MEDIUM, relief='flat')
         
-        ttk.Radiobutton(
-            method_frame,
-            text="Pixelate",
-            variable=self.anon_method,
-            value="pixelate",
-            command=self._update_method_ui
-        ).pack(side="left", padx=4)
+        style.configure('Pro.TLabel', background=cls.BG_DARKER, foreground=cls.TEXT_PRIMARY)
+        style.configure('Heading.TLabel', background=cls.BG_DARKER, foreground=cls.TEXT_PRIMARY, 
+                       font=cls.FONT_HEADING)
+        style.configure('Small.TLabel', background=cls.BG_DARKER, foreground=cls.TEXT_SECONDARY,
+                       font=cls.FONT_SMALL)
         
-        ttk.Radiobutton(
-            method_frame,
-            text="Black Box",
-            variable=self.anon_method,
-            value="blackout",
-            command=self._update_method_ui
-        ).pack(side="left", padx=4)
-
-        # Settings container (switches based on method)
-        self.settings_container = ttk.Frame(anon_frame)
-        self.settings_container.grid(row=1, column=0, columnspan=2, sticky="ew")
+        # Button styles
+        style.configure('Pro.TButton', 
+                       background=cls.BG_MEDIUM,
+                       foreground=cls.TEXT_PRIMARY,
+                       borderwidth=0,
+                       focuscolor='none',
+                       padding=(10, 6))
+        style.map('Pro.TButton',
+                 background=[('active', cls.BG_LIGHT), ('pressed', cls.BG_LIGHTER)])
         
-        # BLUR SETTINGS
-        self.blur_settings = ttk.Frame(self.settings_container)
+        style.configure('Primary.TButton',
+                       background=cls.ACCENT_BLUE,
+                       foreground='white',
+                       borderwidth=0,
+                       focuscolor='none',
+                       padding=(12, 8))
+        style.map('Primary.TButton',
+                 background=[('active', '#5BA5FF'), ('pressed', '#3A8EEF')])
+
+
+# ============================================================================
+# CUSTOM MODERN WIDGETS
+# ============================================================================
+
+class ModernButton(tk.Frame):
+    """Modern button with icon support and hover effects"""
+    def __init__(self, parent, text="", icon="", command=None, variant="default", 
+                 width=None, height=36, **kwargs):
+        super().__init__(parent, bg=parent['bg'], **kwargs)
         
-        ttk.Label(self.blur_settings, text="Blur Strength:").grid(row=0, column=0, sticky="w", pady=2)
-        blur_frame = ttk.Frame(self.blur_settings)
-        blur_frame.grid(row=0, column=1, sticky="ew", padx=(10, 0))
-        blur_frame.columnconfigure(0, weight=1)
-        
-        self.blur_scale = ttk.Scale(
-            blur_frame,
-            from_=41,
-            to=99,
-            orient="horizontal",
-            variable=self.blur_strength,
-            command=lambda x: self.blur_strength.set(int(float(x)) // 2 * 2 + 1)
-        )
-        self.blur_scale.grid(row=0, column=0, sticky="ew")
-        self.blur_label = ttk.Label(blur_frame, text="71")
-        self.blur_label.grid(row=0, column=1, padx=(8, 0))
-        self.blur_strength.trace('w', lambda *args: self.blur_label.config(text=str(self.blur_strength.get())))
-        
-        ttk.Label(self.blur_settings, text="Blur Passes:").grid(row=1, column=0, sticky="w", pady=2)
-        passes_frame = ttk.Frame(self.blur_settings)
-        passes_frame.grid(row=1, column=1, sticky="ew", padx=(10, 0))
-        passes_frame.columnconfigure(0, weight=1)
-        
-        self.passes_scale = ttk.Scale(
-            passes_frame,
-            from_=3,
-            to=10,
-            orient="horizontal",
-            variable=self.blur_passes
-        )
-        self.passes_scale.grid(row=0, column=0, sticky="ew")
-        self.passes_label = ttk.Label(passes_frame, text="6")
-        self.passes_label.grid(row=0, column=1, padx=(8, 0))
-        self.blur_passes.trace('w', lambda *args: self.passes_label.config(text=str(int(self.blur_passes.get()))))
-        
-        # PIXELATE SETTINGS
-        self.pixel_settings = ttk.Frame(self.settings_container)
-        
-        ttk.Label(self.pixel_settings, text="Pixel Block Size:").grid(row=0, column=0, sticky="w", pady=2)
-        pixel_frame = ttk.Frame(self.pixel_settings)
-        pixel_frame.grid(row=0, column=1, sticky="ew", padx=(10, 0))
-        pixel_frame.columnconfigure(0, weight=1)
-        
-        self.pixel_scale = ttk.Scale(
-            pixel_frame,
-            from_=8,
-            to=50,
-            orient="horizontal",
-            variable=self.pixel_size
-        )
-        self.pixel_scale.grid(row=0, column=0, sticky="ew")
-        self.pixel_label = ttk.Label(pixel_frame, text="20")
-        self.pixel_label.grid(row=0, column=1, padx=(8, 0))
-        self.pixel_size.trace('w', lambda *args: self.pixel_label.config(text=str(int(self.pixel_size.get()))))
-        
-        # COMMON SETTINGS
-        ttk.Separator(anon_frame, orient="horizontal").grid(row=2, column=0, columnspan=2, sticky="ew", pady=8)
-        
-        ttk.Label(anon_frame, text="Edge Softness:").grid(row=3, column=0, sticky="w")
-        feather_frame = ttk.Frame(anon_frame)
-        feather_frame.grid(row=3, column=1, sticky="ew", padx=(10, 0))
-        feather_frame.columnconfigure(0, weight=1)
-        
-        ttk.Scale(
-            feather_frame,
-            from_=0,
-            to=50,
-            orient="horizontal",
-            variable=self.edge_feather
-        ).grid(row=0, column=0, sticky="ew")
-        self.feather_label = ttk.Label(feather_frame, text="25%")
-        self.feather_label.grid(row=0, column=1, padx=(8, 0))
-        self.edge_feather.trace('w', lambda *args: self.feather_label.config(text=f"{self.edge_feather.get()}%"))
-        
-        ttk.Label(anon_frame, text="Coverage Area:").grid(row=4, column=0, sticky="w")
-        expand_frame = ttk.Frame(anon_frame)
-        expand_frame.grid(row=4, column=1, sticky="ew", padx=(10, 0))
-        expand_frame.columnconfigure(0, weight=1)
-        
-        ttk.Scale(
-            expand_frame,
-            from_=10,
-            to=60,
-            orient="horizontal",
-            variable=self.region_expansion
-        ).grid(row=0, column=0, sticky="ew")
-        self.expand_label = ttk.Label(expand_frame, text="35%")
-        self.expand_label.grid(row=0, column=1, padx=(8, 0))
-        self.region_expansion.trace('w', lambda *args: self.expand_label.config(text=f"{self.region_expansion.get()}%"))
-        
-        # Show initial method settings
-        self._update_method_ui()
-
-    def _update_method_ui(self):
-        """Show/hide settings based on selected anonymization method"""
-        # Hide all
-        self.blur_settings.pack_forget()
-        self.pixel_settings.pack_forget()
-        
-        # Show relevant
-        method = self.anon_method.get()
-        if method == "blur":
-            self.blur_settings.pack(fill="x")
-        elif method == "pixelate":
-            self.pixel_settings.pack(fill="x")
-        # blackout has no extra settings
-
-    def _build_faces_panel(self, parent):
-        self.faces_box = ttk.LabelFrame(parent, text="Detected Faces — tick to Protect (won't be anonymized)", padding=8)
-        self.faces_box.grid(row=2, column=0, sticky="nsew", pady=(8, 6))
-        self.faces_box.columnconfigure(0, weight=1)
-        
-        # scrollable area
-        self.faces_canvas = tk.Canvas(self.faces_box, bg="#1f1f23", highlightthickness=0, height=180)
-        self.faces_scroll = ttk.Scrollbar(self.faces_box, orient="vertical", command=self.faces_canvas.yview)
-        self.faces_inner = ttk.Frame(self.faces_canvas)
-        self.faces_inner.bind("<Configure>", lambda e: self.faces_canvas.configure(scrollregion=self.faces_canvas.bbox("all")))
-        self.faces_window = self.faces_canvas.create_window((0, 0), window=self.faces_inner, anchor="nw")
-        self.faces_canvas.configure(yscrollcommand=self.faces_scroll.set)
-
-        self.faces_canvas.grid(row=0, column=0, sticky="nsew")
-        self.faces_scroll.grid(row=0, column=1, sticky="ns")
-        self.faces_box.rowconfigure(0, weight=1)
-
-        # actions
-        btns = ttk.Frame(self.faces_box)
-        btns.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(6, 0))
-        ttk.Button(btns, text="Protect All", command=self._protect_all).pack(side="left", padx=4)
-        ttk.Button(btns, text="Clear Protection", command=self._clear_protection).pack(side="left", padx=4)
-
-        # placeholder
-        self._refresh_faces_list()
-
-    def _build_advanced(self, parent):
-        cont = ttk.Frame(parent)
-        cont.grid(row=3, column=0, sticky="ew")
-
-        self._adv_open = tk.BooleanVar(value=False)
-        self.adv_btn = ttk.Button(cont, text="▶ Show Detection Settings", command=self._toggle_advanced)
-        self.adv_btn.pack(fill="x", pady=(2, 0))
-
-        self.adv_frame = ttk.LabelFrame(cont, text="Detection Settings", padding=10)
-
-        # DNN
-        dnn_row = ttk.Frame(self.adv_frame)
-        dnn_row.pack(fill="x", pady=(4, 2))
-        ttk.Label(dnn_row, text="DNN Confidence:").pack(side="left")
-        self.dnn_conf_sb = ttk.Spinbox(dnn_row, from_=0.10, to=0.95, increment=0.05, textvariable=self.dnn_confidence, width=6)
-        self.dnn_conf_sb.pack(side="left", padx=6)
-
-        # Haar
-        haar = ttk.Frame(self.adv_frame)
-        haar.pack(fill="x", pady=(6, 2))
-        ttk.Label(haar, text="Haar Scale:").grid(row=0, column=0, sticky="w")
-        ttk.Spinbox(haar, from_=1.01, to=2.0, increment=0.01, textvariable=self.scale_factor, width=6).grid(row=0, column=1, padx=6)
-        ttk.Label(haar, text="Min Neighbors:").grid(row=0, column=2, sticky="w", padx=(12, 0))
-        ttk.Spinbox(haar, from_=1, to=10, increment=1, textvariable=self.min_neighbors, width=6).grid(row=0, column=3, padx=6)
-        ttk.Label(haar, text="Min Size(px):").grid(row=0, column=4, sticky="w", padx=(12, 0))
-        ttk.Spinbox(haar, from_=10, to=200, increment=5, textvariable=self.min_size, width=6).grid(row=0, column=5, padx=6)
-
-        # re-detect button
-        ttk.Button(self.adv_frame, text="Re-detect with current settings", command=self._redetect).pack(pady=8)
-
-        self._show_hide_advanced()
-
-    def _build_status(self, parent):
-        s = ttk.Frame(parent)
-        s.grid(row=4, column=0, sticky="ew", pady=(6, 0))
-        self.status_label = ttk.Label(s, text="Ready", anchor="w")
-        self.status_label.pack(fill="x")
-
-    def _build_image_area(self):
-        # right side takes remaining space
-        right = ttk.Frame(self.root, padding=(6, 10, 10, 10))
-        right.grid(row=0, column=1, sticky="nsew")
-        right.columnconfigure(0, weight=1)
-        right.rowconfigure(0, weight=1)
-
-        wrap = ttk.LabelFrame(right, text="Image Preview", padding=6)
-        wrap.grid(row=0, column=0, sticky="nsew")
-        wrap.columnconfigure(0, weight=1)
-        wrap.rowconfigure(0, weight=1)
-
-        self.canvas = tk.Canvas(
-            wrap,
-            bg="#2A2A2E",
-            highlightthickness=1,
-            highlightbackground="#3A3A3F"
-        )
-        self.canvas.grid(row=0, column=0, sticky="nsew")
-        self.canvas.bind("<Configure>", lambda e: self._refresh_display())
-
-        self._draw_placeholder()
-
-    # ---------------- Actions ----------------
-
-    def select_image(self):
-        ft = [
-            ("Image files", "*.jpg *.jpeg *.png *.bmp *.tif *.tiff"),
-            ("All files", "*.*")
-        ]
-        path = filedialog.askopenfilename(title="Select an image", filetypes=ft, initialdir=os.getcwd())
-        if not path:
-            self._set_status("No image selected")
-            return
-        if not self._validate_image(path):
-            messagebox.showerror("Invalid File", "Please select a valid image file (JPG/PNG/BMP/TIFF).")
-            return
-
-        try:
-            self.current_image_path = path
-            self.pil_image = Image.open(path).convert("RGB")
-            self.img_bgr = cv2.imread(path)
-            self.original_bgr = self.img_bgr.copy()  # Keep pristine original
-            self.detected_faces = []
-            self.face_vars = []
-            self.face_thumbs = []
-            self._refresh_faces_list()
-            self._set_status(f"Loaded: {Path(path).name} — click Detect")
-            self._refresh_display()
-        except Exception as e:
-            messagebox.showerror("Load Error", f"Could not load image:\n{e}")
-            self._set_status("Load failed")
-
-    def detect_faces(self):
-        if self.img_bgr is None:
-            messagebox.showinfo("No image", "Load an image first.")
-            return
-
-        method = self.detection_method.get()
-        self._set_status(f"Detecting faces ({method})...")
-        faces = []
-
-        try:
-            if method == "dnn" and self.dnn:
-                _, faces = self.dnn.detect_faces(self.img_bgr, confidence_threshold=float(self.dnn_confidence.get()))
-            else:
-                if not self.haar or not hasattr(self.haar, "face_cascade"):
-                    messagebox.showerror("Haar unavailable", "Haar cascade not initialized.")
-                    return
-                gray = cv2.cvtColor(self.img_bgr, cv2.COLOR_BGR2GRAY)
-                faces = self.haar.face_cascade.detectMultiScale(
-                    gray,
-                    scaleFactor=float(self.scale_factor.get()),
-                    minNeighbors=int(self.min_neighbors.get()),
-                    minSize=(int(self.min_size.get()), int(self.min_size.get()))
-                )
-        except Exception as e:
-            messagebox.showerror("Detection Error", str(e))
-            faces = []
-
-        self.detected_faces = [(int(x), int(y), int(w), int(h)) for (x, y, w, h) in faces]
-        
-        # Reset to original after detection
-        self.img_bgr = self.original_bgr.copy()
-        
-        self._build_face_checklist()
-        self._refresh_display()
-        self._set_status(f"Detected: {len(self.detected_faces)} face(s)")
-
-    def apply_anonymization(self):
-        """Apply selected anonymization method to non-protected faces"""
-        if self.original_bgr is None or not self.detected_faces:
-            messagebox.showinfo("Nothing to do", "Load an image and detect faces first.")
-            return
-
-        method = self.anon_method.get()
-        self.img_bgr = self._anonymize_faces(self.original_bgr.copy())
-        self._refresh_display()
-
-    def _anonymize_faces(self, image):
-        """
-        Apply strong anonymization to unprotected faces.
-        Methods: Heavy blur, Pixelation, Black boxes
-        """
-        out = image.copy()
-        method = self.anon_method.get()
-        
-        feather_pct = self.edge_feather.get() / 100.0
-        expansion_pct = self.region_expansion.get() / 100.0
-        
-        protected = 0
-        anonymized = 0
-
-        for idx, (x, y, w, h) in enumerate(self.detected_faces):
-            is_protected = (idx < len(self.face_vars)) and bool(self.face_vars[idx].get())
-            if is_protected:
-                protected += 1
-                continue
-            
-            # Calculate expanded region
-            ext_x = max(0, int(x - w * expansion_pct))
-            ext_y = max(0, int(y - h * expansion_pct))
-            ext_w = min(image.shape[1] - ext_x, int(w * (1 + 2 * expansion_pct)))
-            ext_h = min(image.shape[0] - ext_y, int(h * (1 + 2 * expansion_pct)))
-            
-            # Extract region
-            roi = out[ext_y:ext_y+ext_h, ext_x:ext_x+ext_w].copy()
-            
-            if roi.size == 0:
-                continue
-            
-            # Apply anonymization method
-            if method == "blur":
-                # HEAVY BLUR - multiple passes with large kernel
-                anonymized_roi = roi.copy()
-                kernel = self.blur_strength.get()
-                if kernel % 2 == 0:
-                    kernel += 1
-                passes = int(self.blur_passes.get())
-                
-                for _ in range(passes):
-                    anonymized_roi = cv2.GaussianBlur(anonymized_roi, (kernel, kernel), 0)
-                
-            elif method == "pixelate":
-                # PIXELATION
-                pixel_size = int(self.pixel_size.get())
-                h_roi, w_roi = roi.shape[:2]
-                
-                # Shrink
-                temp = cv2.resize(roi, (w_roi // pixel_size, h_roi // pixel_size), interpolation=cv2.INTER_LINEAR)
-                # Expand back (nearest neighbor for blocky effect)
-                anonymized_roi = cv2.resize(temp, (w_roi, h_roi), interpolation=cv2.INTER_NEAREST)
-                
-            else:  # blackout
-                # SOLID BLACK BOX
-                anonymized_roi = np.zeros_like(roi)
-            
-            # Apply edge feathering if enabled (except for blackout)
-            if feather_pct > 0 and method != "blackout":
-                mask = self._create_feather_mask(ext_h, ext_w, feather_pct)
-                mask_3ch = cv2.merge([mask, mask, mask])
-                blended = (anonymized_roi * mask_3ch + roi * (1 - mask_3ch)).astype(np.uint8)
-                out[ext_y:ext_y+ext_h, ext_x:ext_x+ext_w] = blended
-            else:
-                out[ext_y:ext_y+ext_h, ext_x:ext_x+ext_w] = anonymized_roi
-            
-            anonymized += 1
-        
-        method_names = {
-            "blur": "Heavy Blur",
-            "pixelate": "Pixelation",
-            "blackout": "Black Box"
+        # Color schemes
+        schemes = {
+            'default': {
+                'bg': ProDesign.BG_MEDIUM,
+                'fg': ProDesign.TEXT_PRIMARY,
+                'hover': ProDesign.BG_LIGHT,
+                'press': ProDesign.BG_LIGHTER
+            },
+            'primary': {
+                'bg': ProDesign.ACCENT_BLUE,
+                'fg': '#FFFFFF',
+                'hover': '#5BA5FF',
+                'press': '#3A8EEF'
+            },
+            'success': {
+                'bg': ProDesign.ACCENT_GREEN,
+                'fg': '#FFFFFF',
+                'hover': '#5BE491',
+                'press': '#3ACE70'
+            },
+            'danger': {
+                'bg': ProDesign.ACCENT_RED,
+                'fg': '#FFFFFF',
+                'hover': '#F98282',
+                'press': '#F76060'
+            },
+            'ghost': {
+                'bg': 'transparent',
+                'fg': ProDesign.TEXT_SECONDARY,
+                'hover': ProDesign.BG_LIGHT,
+                'press': ProDesign.BG_LIGHTER
+            }
         }
         
-        self._set_status(f"✓ Anonymized: {anonymized} | Protected: {protected} | Method: {method_names[method]}")
+        self.colors = schemes.get(variant, schemes['default'])
+        self.command = command
+        
+        # Create button
+        self.button = tk.Label(
+            self,
+            text=f"{icon}  {text}" if icon else text,
+            bg=self.colors['bg'] if self.colors['bg'] != 'transparent' else parent['bg'],
+            fg=self.colors['fg'],
+            font=ProDesign.FONT_BODY,
+            cursor='hand2',
+            pady=8,
+            padx=12
+        )
+        self.button.pack(fill='both', expand=True)
+        
+        if width:
+            self.button.configure(width=width)
+        
+        # Bindings
+        self.button.bind('<Enter>', self._on_enter)
+        self.button.bind('<Leave>', self._on_leave)
+        self.button.bind('<Button-1>', self._on_press)
+        self.button.bind('<ButtonRelease-1>', self._on_release)
+    
+    def _on_enter(self, e):
+        if self.colors['bg'] != 'transparent':
+            self.button.configure(bg=self.colors['hover'])
+    
+    def _on_leave(self, e):
+        bg = self.colors['bg'] if self.colors['bg'] != 'transparent' else self.master['bg']
+        self.button.configure(bg=bg)
+    
+    def _on_press(self, e):
+        self.button.configure(bg=self.colors['press'])
+    
+    def _on_release(self, e):
+        self._on_enter(e)
+        if self.command:
+            self.command()
+
+
+class IconButton(tk.Label):
+    """Compact icon-only button for toolbars"""
+    def __init__(self, parent, icon, command=None, tooltip="", size=32):
+        super().__init__(
+            parent,
+            text=icon,
+            bg=parent['bg'],
+            fg=ProDesign.TEXT_SECONDARY,
+            font=('Segoe UI', 12),
+            cursor='hand2',
+            width=size//8,
+            height=1
+        )
+        self.command = command
+        self.default_fg = ProDesign.TEXT_SECONDARY
+        self.hover_fg = ProDesign.TEXT_PRIMARY
+        
+        self.bind('<Enter>', lambda e: self.configure(fg=self.hover_fg, bg=ProDesign.BG_LIGHT))
+        self.bind('<Leave>', lambda e: self.configure(fg=self.default_fg, bg=parent['bg']))
+        self.bind('<Button-1>', lambda e: command() if command else None)
+
+
+class PanelHeader(tk.Frame):
+    """Styled panel header with title and actions"""
+    def __init__(self, parent, title, icon="", **kwargs):
+        super().__init__(parent, bg=ProDesign.BG_DARK, height=36, **kwargs)
+        self.pack_propagate(False)
+        
+        # Title
+        title_label = tk.Label(
+            self,
+            text=f"{icon}  {title}" if icon else title,
+            bg=ProDesign.BG_DARK,
+            fg=ProDesign.TEXT_PRIMARY,
+            font=ProDesign.FONT_SUBHEADING
+        )
+        title_label.pack(side='left', padx=12, pady=8)
+        
+        # Separator
+        separator = tk.Frame(self, bg=ProDesign.BORDER_SUBTLE, height=1)
+        separator.pack(side='bottom', fill='x')
+
+
+class SceneItem(tk.Frame):
+    """Scene/Layer item for left panel"""
+    def __init__(self, parent, index, thumbnail=None, title="", subtitle="", 
+                 is_protected=False, on_select=None, on_toggle_protect=None):
+        super().__init__(parent, bg=ProDesign.BG_DARKER, height=72)
+        self.pack_propagate(False)
+        
+        self.index = index
+        self.is_selected = False
+        self.is_protected = is_protected
+        self.on_select = on_select
+        self.on_toggle_protect = on_toggle_protect
+        
+        # Main container
+        container = tk.Frame(self, bg=ProDesign.BG_MEDIUM, bd=1, relief='flat')
+        container.pack(fill='both', expand=True, padx=4, pady=2)
+        
+        # Index badge
+        index_label = tk.Label(
+            container,
+            text=str(index + 1),
+            bg=ProDesign.BG_LIGHTER,
+            fg=ProDesign.TEXT_TERTIARY,
+            font=ProDesign.FONT_SMALL,
+            width=3
+        )
+        index_label.pack(side='left', padx=(8, 4), pady=8)
+        
+        # Thumbnail
+        if thumbnail:
+            thumb_label = tk.Label(container, image=thumbnail, bg=ProDesign.BG_MEDIUM)
+            thumb_label.image = thumbnail
+            thumb_label.pack(side='left', padx=4)
+        else:
+            placeholder = tk.Label(
+                container,
+                text="👤",
+                bg=ProDesign.BG_LIGHTER,
+                fg=ProDesign.TEXT_TERTIARY,
+                font=('Segoe UI', 20),
+                width=3,
+                height=2
+            )
+            placeholder.pack(side='left', padx=4, pady=8)
+        
+        # Info
+        info_frame = tk.Frame(container, bg=ProDesign.BG_MEDIUM)
+        info_frame.pack(side='left', fill='both', expand=True, padx=8)
+        
+        title_label = tk.Label(
+            info_frame,
+            text=title,
+            bg=ProDesign.BG_MEDIUM,
+            fg=ProDesign.TEXT_PRIMARY,
+            font=ProDesign.FONT_BODY,
+            anchor='w'
+        )
+        title_label.pack(fill='x', pady=(8, 2))
+        
+        subtitle_label = tk.Label(
+            info_frame,
+            text=subtitle,
+            bg=ProDesign.BG_MEDIUM,
+            fg=ProDesign.TEXT_TERTIARY,
+            font=ProDesign.FONT_SMALL,
+            anchor='w'
+        )
+        subtitle_label.pack(fill='x')
+        
+        # Protection toggle
+        self.protect_btn = tk.Label(
+            container,
+            text="🛡️" if is_protected else "⚪",
+            bg=ProDesign.BG_MEDIUM,
+            fg=ProDesign.ACCENT_GREEN if is_protected else ProDesign.TEXT_TERTIARY,
+            font=('Segoe UI', 14),
+            cursor='hand2'
+        )
+        self.protect_btn.pack(side='right', padx=8)
+        self.protect_btn.bind('<Button-1>', lambda e: self._toggle_protect())
+        
+        # Selection binding
+        for widget in [container, index_label, title_label, subtitle_label, info_frame]:
+            widget.bind('<Button-1>', lambda e: self._on_click())
+        
+        self.container = container
+    
+    def _on_click(self):
+        if self.on_select:
+            self.on_select(self.index)
+    
+    def _toggle_protect(self):
+        self.is_protected = not self.is_protected
+        self.protect_btn.configure(
+            text="🛡️" if self.is_protected else "⚪",
+            fg=ProDesign.ACCENT_GREEN if self.is_protected else ProDesign.TEXT_TERTIARY
+        )
+        if self.on_toggle_protect:
+            self.on_toggle_protect(self.index, self.is_protected)
+    
+    def set_selected(self, selected):
+        self.is_selected = selected
+        if selected:
+            self.container.configure(bg=ProDesign.ACCENT_BLUE)
+            for widget in self.container.winfo_children():
+                if isinstance(widget, tk.Frame):
+                    widget.configure(bg=ProDesign.ACCENT_BLUE)
+                    for child in widget.winfo_children():
+                        if hasattr(child, 'configure'):
+                            try:
+                                child.configure(bg=ProDesign.ACCENT_BLUE)
+                            except:
+                                pass
+        else:
+            self.container.configure(bg=ProDesign.BG_MEDIUM)
+            for widget in self.container.winfo_children():
+                if isinstance(widget, tk.Frame):
+                    widget.configure(bg=ProDesign.BG_MEDIUM)
+                    for child in widget.winfo_children():
+                        if hasattr(child, 'configure'):
+                            try:
+                                child.configure(bg=ProDesign.BG_MEDIUM)
+                            except:
+                                pass
+
+
+class PropertySlider(tk.Frame):
+    """Professional property slider with label and value display"""
+    def __init__(self, parent, label, variable, from_=0, to=100, resolution=1, 
+                 unit="", command=None, **kwargs):
+        super().__init__(parent, bg=ProDesign.BG_DARK, **kwargs)
+        
+        # Label row
+        label_row = tk.Frame(self, bg=ProDesign.BG_DARK)
+        label_row.pack(fill='x', pady=(8, 4))
+        
+        tk.Label(
+            label_row,
+            text=label,
+            bg=ProDesign.BG_DARK,
+            fg=ProDesign.TEXT_SECONDARY,
+            font=ProDesign.FONT_SMALL
+        ).pack(side='left')
+        
+        self.value_label = tk.Label(
+            label_row,
+            text=f"{variable.get()}{unit}",
+            bg=ProDesign.BG_DARK,
+            fg=ProDesign.TEXT_PRIMARY,
+            font=ProDesign.FONT_SMALL
+        )
+        self.value_label.pack(side='right')
+        
+        # Slider
+        self.scale = ttk.Scale(
+            self,
+            from_=from_,
+            to=to,
+            orient='horizontal',
+            variable=variable,
+            command=self._on_change
+        )
+        self.scale.pack(fill='x', padx=2)
+        
+        self.variable = variable
+        self.unit = unit
+        self.resolution = resolution
+        self.external_command = command
+    
+    def _on_change(self, value):
+        val = round(float(value) / self.resolution) * self.resolution
+        self.variable.set(val)
+        self.value_label.configure(text=f"{val:.1f}{self.unit}" if self.resolution < 1 else f"{int(val)}{self.unit}")
+        if self.external_command:
+            self.external_command(val)
+
+
+# ============================================================================
+# MAIN APPLICATION
+# ============================================================================
+
+class AnonVisionPro:
+    """Professional AnonVision with modern three-panel interface - YuNet Only"""
+    
+    def __init__(self, root):
+        self.root = root
+        self.root.title("AnonVision Professional")
+        self.root.geometry("1440x900")
+        self.root.configure(bg=ProDesign.BG_DARKEST)
+        
+        # Apply theme
+        ProDesign.apply_theme(root)
+        
+        # State
+        self.current_image = None  # BGR numpy array
+        self.original_image = None
+        self.current_image_path = None
+        self.detected_faces = []
+        self.face_protections = []  # List of bool for each face
+        self.selected_face_index = None
+        self.photo_image = None
+        self.scene_items = []
+        
+        # Settings
+        self.yunet_confidence = tk.DoubleVar(value=0.5)
+        self.blur_intensity = tk.IntVar(value=45)
+        self.blur_passes = tk.IntVar(value=3)
+        self.expansion = tk.IntVar(value=20)
+        self.show_boxes = tk.BooleanVar(value=True)
+        
+        # Initialize detector
+        self._init_detector()
+        
+        # Initialize whitelist
+        self.whitelist = FaceWhitelist()
+        
+        # Build interface
+        self._build_interface()
+        
+        # Set initial status
+        self._set_status("Ready - YuNet detector initialized")
+    
+    def _init_detector(self):
+        """Initialize YuNet face detector with error handling"""
+        if DNNFaceDetector:
+            try:
+                self.yunet_detector = DNNFaceDetector(prefer_gpu=False)
+                print("✓ YuNet detector initialized")
+            except Exception as e:
+                print(f"ERROR: Failed to initialize YuNet: {e}")
+                self.yunet_detector = None
+                messagebox.showerror(
+                    "Detector Error",
+                    f"Failed to initialize YuNet detector:\n{str(e)}\n\n"
+                    "Face detection will not work."
+                )
+        else:
+            self.yunet_detector = None
+            messagebox.showerror(
+                "Missing Detector",
+                "dnn_detector.py module not found.\n\n"
+                "YuNet detector is unavailable.\n"
+                "Face detection will not work."
+            )
+    
+    def _build_interface(self):
+        """Build the main interface layout"""
+        # Main container
+        self.root.grid_rowconfigure(1, weight=1)
+        self.root.grid_columnconfigure(0, weight=0)
+        self.root.grid_columnconfigure(1, weight=1)
+        self.root.grid_columnconfigure(2, weight=0)
+        
+        # Top toolbar
+        self._build_toolbar()
+        
+        # Left panel - Scenes/Faces
+        self._build_left_panel()
+        
+        # Center - Canvas
+        self._build_center_canvas()
+        
+        # Right panel - Properties
+        self._build_right_panel()
+        
+        # Bottom status bar
+        self._build_status_bar()
+    
+    def _build_toolbar(self):
+        """Build top toolbar"""
+        toolbar = tk.Frame(
+            self.root,
+            bg=ProDesign.BG_MEDIUM,
+            height=ProDesign.TOOLBAR_HEIGHT
+        )
+        toolbar.grid(row=0, column=0, columnspan=3, sticky='ew')
+        toolbar.pack_propagate(False)
+        
+        # Left section - File operations
+        left_section = tk.Frame(toolbar, bg=ProDesign.BG_MEDIUM)
+        left_section.pack(side='left', padx=8)
+        
+        ModernButton(left_section, "Open", "📁", self._load_image, 'default').pack(side='left', padx=2)
+        ModernButton(left_section, "Save", "💾", self._save_image, 'default').pack(side='left', padx=2)
+        
+        # Separator
+        tk.Frame(toolbar, bg=ProDesign.BORDER_SUBTLE, width=1).pack(side='left', fill='y', padx=8, pady=8)
+        
+        # Center section - Main actions
+        center_section = tk.Frame(toolbar, bg=ProDesign.BG_MEDIUM)
+        center_section.pack(side='left', padx=8)
+        
+        ModernButton(center_section, "Detect Faces", "🔍", self._detect_faces, 'primary').pack(side='left', padx=2)
+        ModernButton(center_section, "Apply Anonymization", "🛡️", self._apply_anonymization, 'success').pack(side='left', padx=2)
+        
+        # Right section - View options
+        right_section = tk.Frame(toolbar, bg=ProDesign.BG_MEDIUM)
+        right_section.pack(side='right', padx=16)
+        
+        tk.Checkbutton(
+            right_section,
+            text="Show Boxes",
+            variable=self.show_boxes,
+            bg=ProDesign.BG_MEDIUM,
+            fg=ProDesign.TEXT_SECONDARY,
+            selectcolor=ProDesign.BG_MEDIUM,
+            activebackground=ProDesign.BG_MEDIUM,
+            font=ProDesign.FONT_SMALL,
+            command=self._update_canvas
+        ).pack(side='right', padx=8)
+    
+    def _build_left_panel(self):
+        """Build left panel for scenes/faces"""
+        left_panel = tk.Frame(
+            self.root,
+            bg=ProDesign.BG_DARKER,
+            width=ProDesign.SIDEBAR_WIDTH
+        )
+        left_panel.grid(row=1, column=0, sticky='nsew')
+        left_panel.pack_propagate(False)
+        
+        # Header
+        PanelHeader(left_panel, "Detected Faces", "👥")
+        
+        # Action buttons
+        action_frame = tk.Frame(left_panel, bg=ProDesign.BG_DARKER)
+        action_frame.pack(fill='x', padx=8, pady=8)
+        
+        ModernButton(
+            action_frame, 
+            "Protect All", 
+            "✓",
+            self._protect_all,
+            'ghost',
+            height=28
+        ).pack(side='left', padx=2, fill='x', expand=True)
+        
+        ModernButton(
+            action_frame,
+            "Clear All",
+            "✗",
+            self._unprotect_all,
+            'ghost',
+            height=28
+        ).pack(side='left', padx=2, fill='x', expand=True)
+        
+        # Scrollable face list
+        list_frame = tk.Frame(left_panel, bg=ProDesign.BG_DARKER)
+        list_frame.pack(fill='both', expand=True, padx=4)
+        
+        # Canvas for scrolling
+        self.faces_canvas = tk.Canvas(
+            list_frame,
+            bg=ProDesign.BG_DARKER,
+            highlightthickness=0
+        )
+        scrollbar = ttk.Scrollbar(list_frame, orient='vertical', command=self.faces_canvas.yview)
+        self.faces_inner = tk.Frame(self.faces_canvas, bg=ProDesign.BG_DARKER)
+        
+        self.faces_inner.bind(
+            '<Configure>',
+            lambda e: self.faces_canvas.configure(scrollregion=self.faces_canvas.bbox('all'))
+        )
+        
+        self.faces_canvas.create_window((0, 0), window=self.faces_inner, anchor='nw')
+        self.faces_canvas.configure(yscrollcommand=scrollbar.set)
+        
+        self.faces_canvas.pack(side='left', fill='both', expand=True)
+        scrollbar.pack(side='right', fill='y')
+        
+        # Initial empty state
+        self._show_empty_faces_list()
+    
+    def _build_center_canvas(self):
+        """Build center canvas area"""
+        center_frame = tk.Frame(self.root, bg=ProDesign.BG_DARKEST)
+        center_frame.grid(row=1, column=1, sticky='nsew')
+        center_frame.grid_rowconfigure(0, weight=1)
+        center_frame.grid_columnconfigure(0, weight=1)
+        
+        # Canvas with subtle border
+        canvas_container = tk.Frame(
+            center_frame,
+            bg=ProDesign.BORDER_SUBTLE,
+            bd=1
+        )
+        canvas_container.grid(row=0, column=0, sticky='nsew', padx=8, pady=8)
+        canvas_container.grid_rowconfigure(0, weight=1)
+        canvas_container.grid_columnconfigure(0, weight=1)
+        
+        self.main_canvas = tk.Canvas(
+            canvas_container,
+            bg=ProDesign.BG_DARKER,
+            highlightthickness=0
+        )
+        self.main_canvas.grid(row=0, column=0, sticky='nsew')
+        
+        # Bind resize
+        self.main_canvas.bind('<Configure>', lambda e: self._update_canvas())
+        
+        # Initial placeholder
+        self._show_canvas_placeholder()
+    
+    def _build_right_panel(self):
+        """Build right properties panel"""
+        right_panel = tk.Frame(
+            self.root,
+            bg=ProDesign.BG_DARKER,
+            width=ProDesign.PROPERTIES_WIDTH
+        )
+        right_panel.grid(row=1, column=2, sticky='nsew')
+        right_panel.pack_propagate(False)
+        
+        # Header
+        PanelHeader(right_panel, "Properties", "⚙️")
+        
+        # Scrollable content
+        content = tk.Frame(right_panel, bg=ProDesign.BG_DARKER)
+        content.pack(fill='both', expand=True)
+        
+        # Detection Settings Section
+        detect_section = tk.Frame(content, bg=ProDesign.BG_DARK)
+        detect_section.pack(fill='x', padx=8, pady=8)
+        
+        tk.Label(
+            detect_section,
+            text="Detection Settings",
+            bg=ProDesign.BG_DARK,
+            fg=ProDesign.TEXT_PRIMARY,
+            font=ProDesign.FONT_SUBHEADING
+        ).pack(anchor='w', padx=8, pady=(8, 0))
+        
+        PropertySlider(
+            detect_section,
+            "YuNet Confidence",
+            self.yunet_confidence,
+            0.1, 0.9, 0.05
+        ).pack(fill='x', padx=8)
+        
+        # Anonymization Settings Section
+        anon_section = tk.Frame(content, bg=ProDesign.BG_DARK)
+        anon_section.pack(fill='x', padx=8, pady=8)
+        
+        tk.Label(
+            anon_section,
+            text="Anonymization Settings",
+            bg=ProDesign.BG_DARK,
+            fg=ProDesign.TEXT_PRIMARY,
+            font=ProDesign.FONT_SUBHEADING
+        ).pack(anchor='w', padx=8, pady=(8, 0))
+        
+        PropertySlider(
+            anon_section,
+            "Blur Intensity",
+            self.blur_intensity,
+            15, 99, 2,
+            "px"
+        ).pack(fill='x', padx=8)
+        
+        PropertySlider(
+            anon_section,
+            "Blur Passes",
+            self.blur_passes,
+            1, 10, 1,
+            "x"
+        ).pack(fill='x', padx=8)
+        
+        PropertySlider(
+            anon_section,
+            "Coverage Expansion",
+            self.expansion,
+            0, 50, 5,
+            "%"
+        ).pack(fill='x', padx=8, pady=(0, 8))
+        
+        # Stats Section
+        stats_section = tk.Frame(content, bg=ProDesign.BG_DARK)
+        stats_section.pack(fill='x', padx=8, pady=8)
+        
+        tk.Label(
+            stats_section,
+            text="Statistics",
+            bg=ProDesign.BG_DARK,
+            fg=ProDesign.TEXT_PRIMARY,
+            font=ProDesign.FONT_SUBHEADING
+        ).pack(anchor='w', padx=8, pady=(8, 4))
+        
+        self.stats_label = tk.Label(
+            stats_section,
+            text="No image loaded",
+            bg=ProDesign.BG_DARK,
+            fg=ProDesign.TEXT_TERTIARY,
+            font=ProDesign.FONT_SMALL,
+            justify='left'
+        )
+        self.stats_label.pack(anchor='w', padx=8, pady=(4, 8))
+    
+    def _build_status_bar(self):
+        """Build bottom status bar"""
+        status_bar = tk.Frame(
+            self.root,
+            bg=ProDesign.BG_MEDIUM,
+            height=ProDesign.STATUS_HEIGHT
+        )
+        status_bar.grid(row=2, column=0, columnspan=3, sticky='ew')
+        status_bar.pack_propagate(False)
+        
+        self.status_label = tk.Label(
+            status_bar,
+            text="Ready",
+            bg=ProDesign.BG_MEDIUM,
+            fg=ProDesign.TEXT_TERTIARY,
+            font=ProDesign.FONT_SMALL
+        )
+        self.status_label.pack(side='left', padx=16, pady=4)
+        
+        # Right side info
+        self.info_label = tk.Label(
+            status_bar,
+            text="YuNet Detector",
+            bg=ProDesign.BG_MEDIUM,
+            fg=ProDesign.TEXT_TERTIARY,
+            font=ProDesign.FONT_SMALL
+        )
+        self.info_label.pack(side='right', padx=16, pady=4)
+    
+    # ============ FUNCTIONALITY ============
+    
+    def _load_image(self):
+        """Load an image file"""
+        filepath = filedialog.askopenfilename(
+            title="Open Image",
+            filetypes=[
+                ("Image files", "*.jpg *.jpeg *.png *.bmp"),
+                ("All files", "*.*")
+            ]
+        )
+        
+        if not filepath:
+            return
+        
+        try:
+            # Validate path
+            if not validate_image_path(filepath):
+                messagebox.showerror("Invalid File", "Selected file is not a valid image")
+                return
+            
+            # Load image
+            self.current_image = cv2.imread(filepath)
+            if self.current_image is None:
+                raise ValueError("Failed to load image")
+            
+            self.original_image = self.current_image.copy()
+            self.current_image_path = filepath
+            self.detected_faces = []
+            self.face_protections = []
+            self.selected_face_index = None
+            
+            # Clear faces list
+            self._show_empty_faces_list()
+            
+            # Update canvas
+            self._update_canvas()
+            
+            # Update stats
+            h, w = self.current_image.shape[:2]
+            self._update_stats(f"Image: {Path(filepath).name}\nSize: {w}×{h} pixels")
+            
+            self._set_status(f"Loaded: {Path(filepath).name}")
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to load image:\n{str(e)}")
+    
+    def _detect_faces(self):
+        """Detect faces in current image using YuNet"""
+        if self.current_image is None:
+            messagebox.showinfo("No Image", "Please load an image first")
+            return
+        
+        if not self.yunet_detector:
+            messagebox.showerror(
+                "No Detector",
+                "YuNet detector is not available.\n\n"
+                "Please ensure dnn_detector.py is properly installed."
+            )
+            return
+        
+        self._set_status("Detecting faces with YuNet...")
+        self.root.update()
+        
+        try:
+            # YuNet detection
+            _, faces = self.yunet_detector.detect_faces(
+                self.current_image,
+                confidence_threshold=self.yunet_confidence.get()
+            )
+            
+            self.detected_faces = faces
+            
+        except Exception as e:
+            messagebox.showerror("Detection Error", f"Face detection failed:\n{str(e)}")
+            self.detected_faces = []
+            return
+        
+        # Initialize protections
+        self.face_protections = [False] * len(self.detected_faces)
+        
+        # Reset image
+        self.current_image = self.original_image.copy()
+        
+        # Update UI
+        self._populate_faces_list()
+        self._update_canvas()
+        self._set_status(f"Detected {len(self.detected_faces)} face(s)")
+        self._update_stats_with_faces()
+        
+        if len(self.detected_faces) == 0:
+            messagebox.showinfo("No Faces", "No faces were detected in the image.")
+    
+    def _apply_anonymization(self):
+        """Apply blur to unprotected faces"""
+        if self.original_image is None or not self.detected_faces:
+            messagebox.showinfo("No Faces", "Please detect faces first")
+            return
+        
+        self._set_status("Applying anonymization...")
+        self.root.update()
+        
+        result = self.original_image.copy()
+        protected_count = 0
+        blurred_count = 0
+        
+        blur_size = self.blur_intensity.get()
+        if blur_size % 2 == 0:
+            blur_size += 1
+        passes = self.blur_passes.get()
+        expansion = self.expansion.get() / 100.0
+        
+        for idx, (x, y, w, h) in enumerate(self.detected_faces):
+            if self.face_protections[idx]:
+                protected_count += 1
+                continue
+            
+            # Expand region
+            ex = max(0, int(x - w * expansion))
+            ey = max(0, int(y - h * expansion))
+            ew = min(result.shape[1] - ex, int(w * (1 + 2 * expansion)))
+            eh = min(result.shape[0] - ey, int(h * (1 + 2 * expansion)))
+            
+            # Extract and blur
+            roi = result[ey:ey+eh, ex:ex+ew]
+            for _ in range(passes):
+                roi = cv2.GaussianBlur(roi, (blur_size, blur_size), 0)
+            result[ey:ey+eh, ex:ex+ew] = roi
+            
+            blurred_count += 1
+        
+        self.current_image = result
+        self._update_canvas()
+        
+        self._set_status(f"Anonymized {blurred_count} face(s), protected {protected_count}")
         messagebox.showinfo(
             "Complete",
-            f"✓ Anonymized: {anonymized} face(s)\n"
-            f"✓ Protected: {protected} face(s)\n"
-            f"✓ Method: {method_names[method]}"
+            f"✓ Anonymized: {blurred_count} face(s)\n"
+            f"🛡️ Protected: {protected_count} face(s)"
         )
-        
-        return out
-
-    def _create_feather_mask(self, height, width, feather_pct):
-        """Create gradient mask for edge feathering"""
-        y_coords = np.linspace(-1, 1, height)
-        x_coords = np.linspace(-1, 1, width)
-        x_grid, y_grid = np.meshgrid(x_coords, y_coords)
-        
-        dist_from_center = np.sqrt(x_grid**2 + y_grid**2)
-        max_dist = np.sqrt(2)
-        dist_normalized = dist_from_center / max_dist
-        
-        feather_start = 1.0 - feather_pct
-        mask = np.clip((feather_start - dist_normalized) / feather_pct + 1, 0, 1)
-        mask = cv2.GaussianBlur(mask.astype(np.float32), (21, 21), 0)
-        
-        return mask
-
-    def save_image(self):
-        if self.img_bgr is None:
-            messagebox.showinfo("No image", "Nothing to save.")
+    
+    def _save_image(self):
+        """Save the current image"""
+        if self.current_image is None:
+            messagebox.showinfo("No Image", "Nothing to save")
             return
-
-        path = filedialog.asksaveasfilename(
+        
+        filepath = filedialog.asksaveasfilename(
             title="Save Image",
-            defaultextension=".png",
-            filetypes=[("PNG (lossless)", "*.png"), ("JPEG", "*.jpg"), ("All files", "*.*")]
+            defaultextension=".jpg",
+            filetypes=[
+                ("JPEG", "*.jpg"),
+                ("PNG", "*.png"),
+                ("All files", "*.*")
+            ]
         )
-        if not path:
-            return
-
-        try:
-            cv2.imwrite(path, self.img_bgr)
-            self._set_status(f"Saved: {Path(path).name}")
-            messagebox.showinfo("Saved", f"Saved to:\n{path}")
-        except Exception as e:
-            messagebox.showerror("Save Error", str(e))
-
-    # ---------------- Helpers ----------------
-
-    def _validate_image(self, filepath: str) -> bool:
-        if not validate_image_path(filepath):
-            return False
-        try:
-            with Image.open(filepath) as im:
-                im.verify()
-            return True
-        except Exception:
-            return False
-
-    def _draw_placeholder(self):
-        self.canvas.delete("all")
-        w = max(200, self.canvas.winfo_width())
-        h = max(200, self.canvas.winfo_height())
-        self.canvas.create_text(
-            w // 2, h // 2,
-            text="No image loaded\nUse 'Select Image' to begin",
-            fill="#9CA3AF",
-            font=("Segoe UI", 14),
-            justify="center"
-        )
-
-    def _refresh_display(self):
-        """Refresh image rendering on canvas"""
-        if self.pil_image is None:
-            self._draw_placeholder()
-            return
-
-        c_w = max(200, self.canvas.winfo_width())
-        c_h = max(200, self.canvas.winfo_height())
-        max_w = min(c_w - 20, 1600)
-        max_h = min(c_h - 20, 1600)
-
-        bgr_to_show = self.img_bgr.copy() if self.img_bgr is not None else None
-        if bgr_to_show is None:
-            self._draw_placeholder()
-            return
-
-        if self.show_boxes.get() and self.detected_faces:
-            for idx, (x, y, w, h) in enumerate(self.detected_faces):
-                is_protected = (idx < len(self.face_vars)) and bool(self.face_vars[idx].get())
-                color = (16, 185, 129) if is_protected else (239, 68, 68)
-                
-                # Show extended region
-                expansion_pct = self.region_expansion.get() / 100.0
-                if expansion_pct > 0 and not is_protected:
-                    ext_x = max(0, int(x - w * expansion_pct))
-                    ext_y = max(0, int(y - h * expansion_pct))
-                    ext_w = min(bgr_to_show.shape[1] - ext_x, int(w * (1 + 2 * expansion_pct)))
-                    ext_h = min(bgr_to_show.shape[0] - ext_y, int(h * (1 + 2 * expansion_pct)))
-                    
-                    cv2.rectangle(bgr_to_show, (ext_x, ext_y), (ext_x + ext_w, ext_y + ext_h), 
-                                (128, 128, 128), 1)
-                
-                cv2.rectangle(bgr_to_show, (x, y), (x + w, y + h), color, 2)
-
-        rgb = cv2.cvtColor(bgr_to_show, cv2.COLOR_BGR2RGB)
-        pil = Image.fromarray(rgb)
-
-        disp = resize_image_for_display(pil, max_width=max_w, max_height=max_h, fill_background=(42, 42, 46))
-        self.photo_image = ImageTk.PhotoImage(disp)
-
-        self.canvas.delete("all")
-        self.canvas.create_image(c_w // 2, c_h // 2, image=self.photo_image, anchor="center")
-
-    def _on_method_change(self):
-        m = self.detection_method.get()
-        if m == "dnn" and not self.dnn:
-            messagebox.showinfo("DNN unavailable", "YuNet/DNN not initialized; falling back to Haar.")
-            self.detection_method.set("haar")
-        self._set_status(f"Method set to: {self.detection_method.get()}")
-
-    def _toggle_advanced(self):
-        self._adv_open.set(not self._adv_open.get())
-        self._show_hide_advanced()
-
-    def _show_hide_advanced(self):
-        if self._adv_open.get():
-            self.adv_btn.config(text="▼ Hide Detection Settings")
-            self.adv_frame.pack(fill="x", pady=(6, 0))
-        else:
-            self.adv_btn.config(text="▶ Show Detection Settings")
-            self.adv_frame.pack_forget()
-
-    def _redetect(self):
-        if not self.current_image_path:
-            messagebox.showinfo("No Image", "Please load an image first.")
-            return
-        self.detect_faces()
-
-    def _set_status(self, msg: str):
-        self.status_label.config(text=msg)
-        self.root.update_idletasks()
-
-    # ---------- Faces checklist (protect) ----------
-
-    def _refresh_faces_list(self):
-        """Clear faces panel"""
-        for w in self.faces_inner.winfo_children():
-            w.destroy()
-        self.face_vars = []
-        self.face_thumbs = []
-        ttk.Label(self.faces_inner, text="No faces yet — click Detect").pack(anchor="w")
-
-    def _build_face_checklist(self):
-        """Populate faces panel with thumbnails + protect checkboxes"""
-        for w in self.faces_inner.winfo_children():
-            w.destroy()
-        self.face_vars = []
-        self.face_thumbs = []
-
-        if self.img_bgr is None or not self.detected_faces:
-            ttk.Label(self.faces_inner, text="No faces found").pack(anchor="w")
-            return
-
-        for idx, (x, y, w, h) in enumerate(self.detected_faces):
-            row = ttk.Frame(self.faces_inner)
-            row.pack(fill="x", pady=4)
-
-            # thumbnail
+        
+        if filepath:
             try:
-                x0, y0 = max(0, x), max(0, y)
-                x1, y1 = min(self.img_bgr.shape[1], x + w), min(self.img_bgr.shape[0], y + h)
-                crop_bgr = self.img_bgr[y0:y1, x0:x1]
-                if crop_bgr.size == 0:
-                    raise ValueError("Empty crop")
-                thumb_rgb = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2RGB)
-                thumb_pil = Image.fromarray(thumb_rgb).resize((64, 64), Image.LANCZOS)
-                thumb_tk = ImageTk.PhotoImage(thumb_pil)
-                self.face_thumbs.append(thumb_tk)
-                lbl = ttk.Label(row, image=thumb_tk)
-                lbl.image = thumb_tk
-                lbl.pack(side="left", padx=(0, 8))
-            except Exception:
-                ttk.Label(row, text="[face]").pack(side="left", padx=(0, 8))
-
-            var = tk.BooleanVar(value=False)
-            self.face_vars.append(var)
-            cb = ttk.Checkbutton(row, text=f"Face {idx+1} — Protect", variable=var, command=self._refresh_display)
-            cb.pack(side="left")
-
+                cv2.imwrite(filepath, self.current_image)
+                self._set_status(f"Saved: {Path(filepath).name}")
+                messagebox.showinfo("Saved", f"Image saved to:\n{filepath}")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to save image:\n{str(e)}")
+    
+    def _show_empty_faces_list(self):
+        """Show empty state in faces list"""
+        for widget in self.faces_inner.winfo_children():
+            widget.destroy()
+        
+        empty_label = tk.Label(
+            self.faces_inner,
+            text="No faces detected\n\nLoad an image and\nclick 'Detect Faces'",
+            bg=ProDesign.BG_DARKER,
+            fg=ProDesign.TEXT_TERTIARY,
+            font=ProDesign.FONT_SMALL,
+            justify='center'
+        )
+        empty_label.pack(expand=True, pady=32)
+    
+    def _populate_faces_list(self):
+        """Populate faces list with detected faces"""
+        # Clear existing
+        for widget in self.faces_inner.winfo_children():
+            widget.destroy()
+        self.scene_items = []
+        
+        for idx, (x, y, w, h) in enumerate(self.detected_faces):
+            # Create thumbnail
+            try:
+                face_img = self.current_image[y:y+h, x:x+w]
+                face_rgb = cv2.cvtColor(face_img, cv2.COLOR_BGR2RGB)
+                face_pil = Image.fromarray(face_rgb)
+                face_pil.thumbnail((48, 48))
+                thumbnail = ImageTk.PhotoImage(face_pil)
+            except:
+                thumbnail = None
+            
+            # Create scene item
+            item = SceneItem(
+                self.faces_inner,
+                idx,
+                thumbnail,
+                f"Face {idx + 1}",
+                f"{w}×{h} pixels",
+                self.face_protections[idx],
+                self._select_face,
+                self._toggle_face_protection
+            )
+            item.pack(fill='x', pady=2)
+            self.scene_items.append(item)
+    
+    def _select_face(self, index):
+        """Select a face from the list"""
+        self.selected_face_index = index
+        
+        # Update selection visual
+        for i, item in enumerate(self.scene_items):
+            item.set_selected(i == index)
+        
+        self._update_canvas()
+    
+    def _toggle_face_protection(self, index, protected):
+        """Toggle protection status of a face"""
+        if index < len(self.face_protections):
+            self.face_protections[index] = protected
+            self._update_canvas()
+            self._update_stats_with_faces()
+    
     def _protect_all(self):
-        for v in self.face_vars:
-            v.set(True)
-        self._refresh_display()
+        """Protect all faces"""
+        self.face_protections = [True] * len(self.detected_faces)
+        for item in self.scene_items:
+            item.is_protected = True
+            item.protect_btn.configure(
+                text="🛡️",
+                fg=ProDesign.ACCENT_GREEN
+            )
+        self._update_canvas()
+        self._update_stats_with_faces()
+    
+    def _unprotect_all(self):
+        """Unprotect all faces"""
+        self.face_protections = [False] * len(self.detected_faces)
+        for item in self.scene_items:
+            item.is_protected = False
+            item.protect_btn.configure(
+                text="⚪",
+                fg=ProDesign.TEXT_TERTIARY
+            )
+        self._update_canvas()
+        self._update_stats_with_faces()
+    
+    def _show_canvas_placeholder(self):
+        """Show placeholder in canvas"""
+        self.main_canvas.delete('all')
+        w = self.main_canvas.winfo_width()
+        h = self.main_canvas.winfo_height()
+        
+        if w > 100:  # Canvas initialized
+            self.main_canvas.create_text(
+                w // 2, h // 2,
+                text="Drop an image here or click 'Open'",
+                fill=ProDesign.TEXT_TERTIARY,
+                font=ProDesign.FONT_HEADING
+            )
+    
+    def _update_canvas(self):
+        """Update the main canvas display"""
+        if self.current_image is None:
+            self._show_canvas_placeholder()
+            return
+        
+        # Get canvas dimensions
+        canvas_w = max(100, self.main_canvas.winfo_width())
+        canvas_h = max(100, self.main_canvas.winfo_height())
+        
+        # Create display image
+        display_img = self.current_image.copy()
+        
+        # Draw boxes if enabled
+        if self.show_boxes.get() and self.detected_faces:
+            expansion = self.expansion.get() / 100.0
+            
+            for idx, (x, y, w, h) in enumerate(self.detected_faces):
+                is_protected = self.face_protections[idx] if idx < len(self.face_protections) else False
+                is_selected = idx == self.selected_face_index
+                
+                # Main box color
+                if is_protected:
+                    color = (128, 222, 74)  # Green
+                else:
+                    color = (113, 135, 248)  # Blue
+                
+                thickness = 3 if is_selected else 2
+                
+                # Draw expansion area if not protected
+                if not is_protected and expansion > 0:
+                    ex = max(0, int(x - w * expansion))
+                    ey = max(0, int(y - h * expansion))
+                    ew = min(display_img.shape[1] - ex, int(w * (1 + 2 * expansion)))
+                    eh = min(display_img.shape[0] - ey, int(h * (1 + 2 * expansion)))
+                    cv2.rectangle(display_img, (ex, ey), (ex + ew, ey + eh), (100, 100, 100), 1)
+                
+                # Draw main box
+                cv2.rectangle(display_img, (x, y), (x + w, y + h), color, thickness)
+                
+                # Draw label
+                label = f"Face {idx + 1}"
+                if is_protected:
+                    label += " 🛡️"
+                
+                label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)[0]
+                label_y = y - 8 if y > 20 else y + h + 16
+                
+                cv2.rectangle(
+                    display_img,
+                    (x, label_y - label_size[1] - 4),
+                    (x + label_size[0] + 8, label_y + 2),
+                    color,
+                    -1
+                )
+                cv2.putText(
+                    display_img,
+                    label,
+                    (x + 4, label_y - 2),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    (255, 255, 255),
+                    1
+                )
+        
+        # Convert to PIL
+        rgb = cv2.cvtColor(display_img, cv2.COLOR_BGR2RGB)
+        pil_img = Image.fromarray(rgb)
+        
+        # Resize to fit canvas
+        img_w, img_h = pil_img.size
+        scale = min(canvas_w / img_w, canvas_h / img_h, 1.0)
+        new_w = int(img_w * scale)
+        new_h = int(img_h * scale)
+        
+        if scale < 1.0:
+            pil_img = pil_img.resize((new_w, new_h), Image.LANCZOS)
+        
+        # Convert to PhotoImage
+        self.photo_image = ImageTk.PhotoImage(pil_img)
+        
+        # Display
+        self.main_canvas.delete('all')
+        self.main_canvas.create_image(
+            canvas_w // 2, canvas_h // 2,
+            image=self.photo_image
+        )
+    
+    def _set_status(self, message):
+        """Update status bar"""
+        self.status_label.configure(text=message)
+        timestamp = time.strftime("%H:%M:%S")
+        self.info_label.configure(text=f"YuNet | {timestamp}")
+    
+    def _update_stats(self, text):
+        """Update statistics display"""
+        self.stats_label.configure(text=text)
+    
+    def _update_stats_with_faces(self):
+        """Update stats with face information"""
+        if self.current_image is None:
+            return
+        
+        h, w = self.current_image.shape[:2]
+        total = len(self.detected_faces)
+        protected = sum(self.face_protections)
+        to_blur = total - protected
+        
+        stats = f"Image: {Path(self.current_image_path).name if self.current_image_path else 'Untitled'}\n"
+        stats += f"Size: {w}×{h} pixels\n"
+        stats += f"─────────────────\n"
+        stats += f"Total Faces: {total}\n"
+        stats += f"Protected: {protected} 🛡️\n"
+        stats += f"To Anonymize: {to_blur}"
+        
+        self._update_stats(stats)
 
-    def _clear_protection(self):
-        for v in self.face_vars:
-            v.set(False)
-        self._refresh_display()
 
+# ============================================================================
+# ENTRY POINT
+# ============================================================================
 
-# -------- entry --------
 def main():
+    """Main entry point"""
     root = tk.Tk()
-    # High-DPI awareness (Windows)
+    
+    # Windows DPI awareness
     try:
         from ctypes import windll
         windll.shcore.SetProcessDpiAwareness(1)
-    except Exception:
+    except:
         pass
-    app = AnonVisionGUI(root)
+    
+    app = AnonVisionPro(root)
     root.mainloop()
 
 
 if __name__ == "__main__":
+    print("=" * 70)
+    print("AnonVision Professional - YuNet Only")
+    print("=" * 70)
     main()
