@@ -541,12 +541,6 @@ class AnonVisionGUI:
         }
         
         self._set_status(f"✓ Anonymized: {anonymized} | Protected: {protected} | Method: {method_names[method]}")
-        messagebox.showinfo(
-            "Complete",
-            f"✓ Anonymized: {anonymized} face(s)\n"
-            f"✓ Protected: {protected} face(s)\n"
-            f"✓ Method: {method_names[method]}"
-        )
         
         return out
 
