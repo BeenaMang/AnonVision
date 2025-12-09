@@ -289,7 +289,7 @@ Click on a bounding box in the preview to select that face. Selected faces can t
 
 The Anonymize & Export panel contains all tools for applying privacy protection and saving results.
 
-![Anonymize Panel](../data/output_images/Finish)
+![Anonymize Panel](../data/output_images/finish.PNG)
 
 #### Selecting Anonymization Method
 
