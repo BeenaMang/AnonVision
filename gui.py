@@ -31,8 +31,8 @@ class AnonVisionGUI:
         # ---- root/window ----
         self.root = root
         self.root.title("AnonVision — Face Privacy Protection")
-        self.root.geometry("1280x780")
-        self.root.minsize(1080, 680)
+        self.root.geometry("1400x820")
+        self.root.minsize(1200, 700)
 
         # ---- basic dark-ish ttk theme ----
         self._init_style()
@@ -95,109 +95,255 @@ class AnonVisionGUI:
     # ---------------- UI ----------------
 
     def _init_style(self):
-        """Minimal dark-ish ttk styling."""
+        """Dark 3D-editor style ttk styling."""
         style = ttk.Style()
         try:
             style.theme_use("clam")
         except Exception:
             pass
-        style.configure("TFrame", background="#18181B")
-        style.configure("TLabel", background="#18181B", foreground="#E5E7EB")
-        style.configure("TLabelframe", background="#18181B", foreground="#E5E7EB")
-        style.configure("TLabelframe.Label", background="#18181B", foreground="#E5E7EB")
-        style.configure("TButton", background="#27272A", foreground="#E5E7EB")
-        style.configure("TCheckbutton", background="#18181B", foreground="#E5E7EB")
-        style.configure("TRadiobutton", background="#18181B", foreground="#E5E7EB")
-        style.configure("TSeparator", background="#3A3A3F")
+        
+        # Color palette - matching dark 3D editor aesthetic
+        self.colors = {
+            'bg_darkest': '#0D0D0F',      # Root background
+            'bg_dark': '#1A1A1E',          # Panel backgrounds
+            'bg_medium': '#232328',        # Card/section backgrounds
+            'bg_light': '#2D2D33',         # Hover/active states
+            'border': '#3A3A42',           # Subtle borders
+            'text_primary': '#E5E7EB',     # Primary text
+            'text_secondary': '#9CA3AF',   # Secondary/muted text
+            'accent_orange': '#F97316',    # Primary accent (orange like reference)
+            'accent_teal': '#14B8A6',      # Secondary accent (teal)
+            'accent_blue': '#3B82F6',      # Info accent
+            'success': '#10B981',          # Success green
+            'danger': '#EF4444',           # Danger red
+        }
+        
+        # Root window background
+        self.root.configure(bg=self.colors['bg_darkest'])
+        
+        # Configure ttk styles
+        style.configure("TFrame", background=self.colors['bg_dark'])
+        style.configure("TLabel", background=self.colors['bg_dark'], foreground=self.colors['text_primary'], font=("Segoe UI", 10))
+        style.configure("TLabelframe", background=self.colors['bg_dark'], foreground=self.colors['text_primary'])
+        style.configure("TLabelframe.Label", background=self.colors['bg_dark'], foreground=self.colors['text_primary'], font=("Segoe UI", 10, "bold"))
+        
+        # Buttons
+        style.configure("TButton", background=self.colors['bg_medium'], foreground=self.colors['text_primary'], 
+                       borderwidth=0, focuscolor='none', font=("Segoe UI", 10))
+        style.map("TButton", background=[('active', self.colors['bg_light']), ('pressed', self.colors['bg_light'])])
+        
+        # Accent button style (orange)
+        style.configure("Accent.TButton", background=self.colors['accent_orange'], foreground="#FFFFFF", 
+                       borderwidth=0, focuscolor='none', font=("Segoe UI", 10, "bold"))
+        style.map("Accent.TButton", background=[('active', '#EA580C'), ('pressed', '#C2410C')])
+        
+        # Secondary accent button (teal)
+        style.configure("Teal.TButton", background=self.colors['accent_teal'], foreground="#FFFFFF",
+                       borderwidth=0, focuscolor='none', font=("Segoe UI", 10, "bold"))
+        style.map("Teal.TButton", background=[('active', '#0D9488'), ('pressed', '#0F766E')])
+        
+        style.configure("TCheckbutton", background=self.colors['bg_dark'], foreground=self.colors['text_primary'], font=("Segoe UI", 10))
+        style.configure("TRadiobutton", background=self.colors['bg_dark'], foreground=self.colors['text_primary'], font=("Segoe UI", 10))
+        style.configure("TSeparator", background=self.colors['border'])
+        
+        # Scale/slider styling
+        style.configure("TScale", background=self.colors['bg_dark'], troughcolor=self.colors['bg_medium'])
+        
+        # Spinbox styling
+        style.configure("TSpinbox", fieldbackground=self.colors['bg_medium'], foreground=self.colors['text_primary'],
+                       background=self.colors['bg_medium'], borderwidth=1)
+        
+        # Section header style
+        style.configure("Section.TLabel", background=self.colors['bg_dark'], foreground=self.colors['accent_orange'], 
+                       font=("Segoe UI", 11, "bold"))
+        
+        # Muted text style
+        style.configure("Muted.TLabel", background=self.colors['bg_dark'], foreground=self.colors['text_secondary'], 
+                       font=("Segoe UI", 9))
+        
+        # Card frame style
+        style.configure("Card.TFrame", background=self.colors['bg_medium'])
+        style.configure("Card.TLabel", background=self.colors['bg_medium'], foreground=self.colors['text_primary'], font=("Segoe UI", 10))
+        style.configure("Card.TCheckbutton", background=self.colors['bg_medium'], foreground=self.colors['text_primary'], font=("Segoe UI", 10))
+        style.configure("Card.TRadiobutton", background=self.colors['bg_medium'], foreground=self.colors['text_primary'], font=("Segoe UI", 10))
 
     def _build_ui(self):
-        # overall grid: left panel (controls) + right main (image)
-        self.root.columnconfigure(0, weight=0)
-        self.root.columnconfigure(1, weight=1)
-        self.root.rowconfigure(0, weight=1)
+        # Main container with padding
+        main_container = tk.Frame(self.root, bg=self.colors['bg_darkest'], padx=12, pady=12)
+        main_container.pack(fill="both", expand=True)
+        
+        # Configure 3-column grid: LEFT (fixed) | CENTER (expand) | RIGHT (fixed)
+        main_container.columnconfigure(0, weight=0, minsize=260)  # Left panel - Prepare
+        main_container.columnconfigure(1, weight=1, minsize=400)  # Center panel - Preview (expands)
+        main_container.columnconfigure(2, weight=0, minsize=280)  # Right panel - Anonymize & Export
+        main_container.rowconfigure(0, weight=1)
 
-        # LEFT: control panel
-        left = ttk.Frame(self.root, padding=10)
-        left.grid(row=0, column=0, sticky="nsw")
-        left.columnconfigure(0, weight=1)
+        # LEFT PANEL: "1. Prepare"
+        self._build_left_panel(main_container)
+        
+        # CENTER PANEL: "2. Preview"
+        self._build_center_panel(main_container)
+        
+        # RIGHT PANEL: "3. Anonymize & Export"
+        self._build_right_panel(main_container)
 
-        self._build_top_bar(left)          # file + actions
-        self._build_anon_settings(left)    # anonymization controls
-        self._build_faces_panel(left)      # detected faces (protect selection)
-        self._build_advanced(left)         # advanced options (collapsible)
-        self._build_status(left)           # status bar under controls
+    def _build_left_panel(self, parent):
+        """LEFT PANEL - Step 1: Prepare (Input & Setup)"""
+        left = tk.Frame(parent, bg=self.colors['bg_dark'], padx=12, pady=12)
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+        
+        # Panel header
+        header = ttk.Label(left, text="1. Prepare", style="Section.TLabel")
+        header.pack(anchor="w", pady=(0, 12))
+        
+        # ---- Input Section ----
+        input_card = tk.Frame(left, bg=self.colors['bg_medium'], padx=12, pady=12)
+        input_card.pack(fill="x", pady=(0, 12))
+        
+        ttk.Label(input_card, text="Input", style="Card.TLabel", font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(0, 8))
+        
+        btn_frame = ttk.Frame(input_card, style="Card.TFrame")
+        btn_frame.pack(fill="x")
+        
+        ttk.Button(btn_frame, text="📁  Select Image", command=self.select_image, style="Accent.TButton").pack(fill="x", pady=(0, 6))
+        ttk.Button(btn_frame, text="🔍  Detect Faces", command=self.detect_faces, style="Teal.TButton").pack(fill="x")
+        
+        # ---- Detection Method Section ----
+        method_card = tk.Frame(left, bg=self.colors['bg_medium'], padx=12, pady=12)
+        method_card.pack(fill="x", pady=(0, 12))
+        
+        ttk.Label(method_card, text="Detection Method", style="Card.TLabel", font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(0, 8))
+        
+        method_inner = ttk.Frame(method_card, style="Card.TFrame")
+        method_inner.pack(fill="x")
+        
+        ttk.Radiobutton(method_inner, text="DNN (YuNet)", value="dnn",
+                       variable=self.detection_method, style="Card.TRadiobutton",
+                       command=self._on_method_change).pack(anchor="w", pady=2)
+        ttk.Radiobutton(method_inner, text="Haar Cascade", value="haar",
+                       variable=self.detection_method, style="Card.TRadiobutton",
+                       command=self._on_method_change).pack(anchor="w", pady=2)
+        
+        ttk.Separator(method_card, orient="horizontal").pack(fill="x", pady=8)
+        
+        ttk.Checkbutton(method_card, text="Show detection boxes", variable=self.show_boxes, 
+                       style="Card.TCheckbutton", command=self._refresh_display).pack(anchor="w")
+        
+        # ---- Detection Settings (Collapsible) ----
+        self._build_advanced(left)
 
-        # RIGHT: image area
-        self._build_image_area()
+    def _build_center_panel(self, parent):
+        """CENTER PANEL - Step 2: Preview (Main Image Workspace)"""
+        center = tk.Frame(parent, bg=self.colors['bg_dark'], padx=12, pady=12)
+        center.grid(row=0, column=1, sticky="nsew", padx=6)
+        center.columnconfigure(0, weight=1)
+        center.rowconfigure(1, weight=1)
+        
+        # Panel header
+        header = ttk.Label(center, text="2. Preview", style="Section.TLabel")
+        header.grid(row=0, column=0, sticky="w", pady=(0, 12))
+        
+        # Image canvas container with border effect
+        canvas_outer = tk.Frame(center, bg=self.colors['border'], padx=2, pady=2)
+        canvas_outer.grid(row=1, column=0, sticky="nsew")
+        canvas_outer.columnconfigure(0, weight=1)
+        canvas_outer.rowconfigure(0, weight=1)
+        
+        canvas_container = tk.Frame(canvas_outer, bg=self.colors['bg_medium'])
+        canvas_container.grid(row=0, column=0, sticky="nsew")
+        canvas_container.columnconfigure(0, weight=1)
+        canvas_container.rowconfigure(0, weight=1)
+        
+        self.canvas = tk.Canvas(
+            canvas_container,
+            bg='#1E1E22',
+            highlightthickness=0
+        )
+        self.canvas.grid(row=0, column=0, sticky="nsew", padx=4, pady=4)
+        self.canvas.bind("<Configure>", lambda e: self._refresh_display())
+        
+        self._draw_placeholder()
+
+    def _build_right_panel(self, parent):
+        """RIGHT PANEL - Step 3: Anonymize & Export"""
+        right = tk.Frame(parent, bg=self.colors['bg_dark'], padx=12, pady=12)
+        right.grid(row=0, column=2, sticky="nsew", padx=(6, 0))
+        right.columnconfigure(0, weight=1)
+        right.rowconfigure(2, weight=1)  # Faces panel expands
+        
+        # Panel header
+        header = ttk.Label(right, text="3. Anonymize & Export", style="Section.TLabel")
+        header.grid(row=0, column=0, sticky="w", pady=(0, 12))
+        
+        # ---- Anonymization Method Section ----
+        self._build_anon_settings(right)
+        
+        # ---- Faces to Protect Section ----
+        self._build_faces_panel(right)
+        
+        # ---- Export Section ----
+        self._build_export_section(right)
+        
+        # ---- Status Bar ----
+        self._build_status(right)
 
     def _build_top_bar(self, parent):
-        wrap = ttk.LabelFrame(parent, text="Controls", padding=8)
-        wrap.grid(row=0, column=0, sticky="ew")
-        wrap.columnconfigure(10, weight=1)
-
-        ttk.Button(wrap, text="📁 Select Image", command=self.select_image).grid(row=0, column=0, padx=4, pady=4, sticky="ew")
-        ttk.Button(wrap, text="🔍 Detect", command=self.detect_faces).grid(row=0, column=1, padx=4, pady=4, sticky="ew")
-        ttk.Button(wrap, text="🛡 Apply Anonymization", command=self.apply_anonymization).grid(row=0, column=2, padx=4, pady=4, sticky="ew")
-        ttk.Button(wrap, text="💾 Save Result", command=self.save_image).grid(row=0, column=3, padx=4, pady=4, sticky="ew")
-
-        ttk.Separator(wrap, orient="horizontal").grid(row=1, column=0, columnspan=4, sticky="ew", pady=(6, 4))
-
-        ttk.Checkbutton(wrap, text="Show boxes", variable=self.show_boxes, command=self._refresh_display)\
-            .grid(row=2, column=0, padx=4, pady=2, sticky="w")
-
-        ttk.Label(wrap, text="Method:").grid(row=2, column=1, sticky="e")
-        ttk.Radiobutton(wrap, text="DNN (YuNet)", value="dnn",
-                        variable=self.detection_method,
-                        command=self._on_method_change).grid(row=2, column=2, padx=(4, 0), sticky="w")
-        ttk.Radiobutton(wrap, text="Haar", value="haar",
-                        variable=self.detection_method,
-                        command=self._on_method_change).grid(row=2, column=3, padx=4, sticky="w")
+        # This method is kept for compatibility but functionality moved to left/right panels
+        pass
 
     def _build_anon_settings(self, parent):
         """Anonymization method and settings"""
-        anon_frame = ttk.LabelFrame(parent, text="🛡 Anonymization Method", padding=10)
-        anon_frame.grid(row=1, column=0, sticky="ew", pady=(8, 6))
-        anon_frame.columnconfigure(1, weight=1)
+        anon_card = tk.Frame(parent, bg=self.colors['bg_medium'], padx=12, pady=12)
+        anon_card.grid(row=1, column=0, sticky="ew", pady=(0, 12))
+        anon_card.columnconfigure(0, weight=1)
+
+        ttk.Label(anon_card, text="Anonymization Method", style="Card.TLabel", font=("Segoe UI", 10, "bold")).grid(row=0, column=0, sticky="w", pady=(0, 8))
 
         # Method selection
-        row = 0
-        method_frame = ttk.Frame(anon_frame)
-        method_frame.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        method_frame = ttk.Frame(anon_card, style="Card.TFrame")
+        method_frame.grid(row=1, column=0, sticky="ew", pady=(0, 8))
         
         ttk.Radiobutton(
             method_frame,
             text="Heavy Blur",
             variable=self.anon_method,
             value="blur",
+            style="Card.TRadiobutton",
             command=self._update_method_ui
-        ).pack(side="left", padx=4)
+        ).pack(anchor="w", pady=1)
         
         ttk.Radiobutton(
             method_frame,
             text="Pixelate",
             variable=self.anon_method,
             value="pixelate",
+            style="Card.TRadiobutton",
             command=self._update_method_ui
-        ).pack(side="left", padx=4)
+        ).pack(anchor="w", pady=1)
         
         ttk.Radiobutton(
             method_frame,
             text="Black Box",
             variable=self.anon_method,
             value="blackout",
+            style="Card.TRadiobutton",
             command=self._update_method_ui
-        ).pack(side="left", padx=4)
+        ).pack(anchor="w", pady=1)
+
+        ttk.Separator(anon_card, orient="horizontal").grid(row=2, column=0, sticky="ew", pady=8)
 
         # Settings container (switches based on method)
-        self.settings_container = ttk.Frame(anon_frame)
-        self.settings_container.grid(row=1, column=0, columnspan=2, sticky="ew")
+        self.settings_container = ttk.Frame(anon_card, style="Card.TFrame")
+        self.settings_container.grid(row=3, column=0, sticky="ew")
+        self.settings_container.columnconfigure(1, weight=1)
         
         # BLUR SETTINGS
-        self.blur_settings = ttk.Frame(self.settings_container)
+        self.blur_settings = ttk.Frame(self.settings_container, style="Card.TFrame")
+        self.blur_settings.columnconfigure(1, weight=1)
         
-        ttk.Label(self.blur_settings, text="Blur Strength:").grid(row=0, column=0, sticky="w", pady=2)
-        blur_frame = ttk.Frame(self.blur_settings)
-        blur_frame.grid(row=0, column=1, sticky="ew", padx=(10, 0))
+        ttk.Label(self.blur_settings, text="Blur Strength:", style="Card.TLabel").grid(row=0, column=0, sticky="w", pady=2)
+        blur_frame = ttk.Frame(self.blur_settings, style="Card.TFrame")
+        blur_frame.grid(row=0, column=1, sticky="ew", padx=(8, 0))
         blur_frame.columnconfigure(0, weight=1)
         
         self.blur_scale = ttk.Scale(
@@ -209,13 +355,13 @@ class AnonVisionGUI:
             command=lambda x: self.blur_strength.set(int(float(x)) // 2 * 2 + 1)
         )
         self.blur_scale.grid(row=0, column=0, sticky="ew")
-        self.blur_label = ttk.Label(blur_frame, text="71")
-        self.blur_label.grid(row=0, column=1, padx=(8, 0))
+        self.blur_label = ttk.Label(blur_frame, text="71", style="Card.TLabel", width=4)
+        self.blur_label.grid(row=0, column=1, padx=(6, 0))
         self.blur_strength.trace('w', lambda *args: self.blur_label.config(text=str(self.blur_strength.get())))
         
-        ttk.Label(self.blur_settings, text="Blur Passes:").grid(row=1, column=0, sticky="w", pady=2)
-        passes_frame = ttk.Frame(self.blur_settings)
-        passes_frame.grid(row=1, column=1, sticky="ew", padx=(10, 0))
+        ttk.Label(self.blur_settings, text="Blur Passes:", style="Card.TLabel").grid(row=1, column=0, sticky="w", pady=2)
+        passes_frame = ttk.Frame(self.blur_settings, style="Card.TFrame")
+        passes_frame.grid(row=1, column=1, sticky="ew", padx=(8, 0))
         passes_frame.columnconfigure(0, weight=1)
         
         self.passes_scale = ttk.Scale(
@@ -226,16 +372,17 @@ class AnonVisionGUI:
             variable=self.blur_passes
         )
         self.passes_scale.grid(row=0, column=0, sticky="ew")
-        self.passes_label = ttk.Label(passes_frame, text="6")
-        self.passes_label.grid(row=0, column=1, padx=(8, 0))
+        self.passes_label = ttk.Label(passes_frame, text="6", style="Card.TLabel", width=4)
+        self.passes_label.grid(row=0, column=1, padx=(6, 0))
         self.blur_passes.trace('w', lambda *args: self.passes_label.config(text=str(int(self.blur_passes.get()))))
         
         # PIXELATE SETTINGS
-        self.pixel_settings = ttk.Frame(self.settings_container)
+        self.pixel_settings = ttk.Frame(self.settings_container, style="Card.TFrame")
+        self.pixel_settings.columnconfigure(1, weight=1)
         
-        ttk.Label(self.pixel_settings, text="Pixel Block Size:").grid(row=0, column=0, sticky="w", pady=2)
-        pixel_frame = ttk.Frame(self.pixel_settings)
-        pixel_frame.grid(row=0, column=1, sticky="ew", padx=(10, 0))
+        ttk.Label(self.pixel_settings, text="Block Size:", style="Card.TLabel").grid(row=0, column=0, sticky="w", pady=2)
+        pixel_frame = ttk.Frame(self.pixel_settings, style="Card.TFrame")
+        pixel_frame.grid(row=0, column=1, sticky="ew", padx=(8, 0))
         pixel_frame.columnconfigure(0, weight=1)
         
         self.pixel_scale = ttk.Scale(
@@ -246,16 +393,18 @@ class AnonVisionGUI:
             variable=self.pixel_size
         )
         self.pixel_scale.grid(row=0, column=0, sticky="ew")
-        self.pixel_label = ttk.Label(pixel_frame, text="20")
-        self.pixel_label.grid(row=0, column=1, padx=(8, 0))
+        self.pixel_label = ttk.Label(pixel_frame, text="20", style="Card.TLabel", width=4)
+        self.pixel_label.grid(row=0, column=1, padx=(6, 0))
         self.pixel_size.trace('w', lambda *args: self.pixel_label.config(text=str(int(self.pixel_size.get()))))
         
         # COMMON SETTINGS
-        ttk.Separator(anon_frame, orient="horizontal").grid(row=2, column=0, columnspan=2, sticky="ew", pady=8)
+        common_frame = ttk.Frame(anon_card, style="Card.TFrame")
+        common_frame.grid(row=4, column=0, sticky="ew", pady=(8, 0))
+        common_frame.columnconfigure(1, weight=1)
         
-        ttk.Label(anon_frame, text="Edge Softness:").grid(row=3, column=0, sticky="w")
-        feather_frame = ttk.Frame(anon_frame)
-        feather_frame.grid(row=3, column=1, sticky="ew", padx=(10, 0))
+        ttk.Label(common_frame, text="Edge Softness:", style="Card.TLabel").grid(row=0, column=0, sticky="w", pady=2)
+        feather_frame = ttk.Frame(common_frame, style="Card.TFrame")
+        feather_frame.grid(row=0, column=1, sticky="ew", padx=(8, 0))
         feather_frame.columnconfigure(0, weight=1)
         
         ttk.Scale(
@@ -265,13 +414,13 @@ class AnonVisionGUI:
             orient="horizontal",
             variable=self.edge_feather
         ).grid(row=0, column=0, sticky="ew")
-        self.feather_label = ttk.Label(feather_frame, text="25%")
-        self.feather_label.grid(row=0, column=1, padx=(8, 0))
+        self.feather_label = ttk.Label(feather_frame, text="25%", style="Card.TLabel", width=4)
+        self.feather_label.grid(row=0, column=1, padx=(6, 0))
         self.edge_feather.trace('w', lambda *args: self.feather_label.config(text=f"{self.edge_feather.get()}%"))
         
-        ttk.Label(anon_frame, text="Coverage Area:").grid(row=4, column=0, sticky="w")
-        expand_frame = ttk.Frame(anon_frame)
-        expand_frame.grid(row=4, column=1, sticky="ew", padx=(10, 0))
+        ttk.Label(common_frame, text="Coverage:", style="Card.TLabel").grid(row=1, column=0, sticky="w", pady=2)
+        expand_frame = ttk.Frame(common_frame, style="Card.TFrame")
+        expand_frame.grid(row=1, column=1, sticky="ew", padx=(8, 0))
         expand_frame.columnconfigure(0, weight=1)
         
         ttk.Scale(
@@ -281,8 +430,8 @@ class AnonVisionGUI:
             orient="horizontal",
             variable=self.region_expansion
         ).grid(row=0, column=0, sticky="ew")
-        self.expand_label = ttk.Label(expand_frame, text="35%")
-        self.expand_label.grid(row=0, column=1, padx=(8, 0))
+        self.expand_label = ttk.Label(expand_frame, text="35%", style="Card.TLabel", width=4)
+        self.expand_label.grid(row=0, column=1, padx=(6, 0))
         self.region_expansion.trace('w', lambda *args: self.expand_label.config(text=f"{self.region_expansion.get()}%"))
         
         # Show initial method settings
@@ -303,13 +452,22 @@ class AnonVisionGUI:
         # blackout has no extra settings
 
     def _build_faces_panel(self, parent):
-        self.faces_box = ttk.LabelFrame(parent, text="Detected Faces — tick to Protect (won't be anonymized)", padding=8)
-        self.faces_box.grid(row=2, column=0, sticky="nsew", pady=(8, 6))
-        self.faces_box.columnconfigure(0, weight=1)
+        """Faces to Protect section"""
+        faces_card = tk.Frame(parent, bg=self.colors['bg_medium'], padx=12, pady=12)
+        faces_card.grid(row=2, column=0, sticky="nsew", pady=(0, 12))
+        faces_card.columnconfigure(0, weight=1)
+        faces_card.rowconfigure(1, weight=1)
         
-        # scrollable area
-        self.faces_canvas = tk.Canvas(self.faces_box, bg="#1f1f23", highlightthickness=0, height=180)
-        self.faces_scroll = ttk.Scrollbar(self.faces_box, orient="vertical", command=self.faces_canvas.yview)
+        ttk.Label(faces_card, text="Faces to Protect", style="Card.TLabel", font=("Segoe UI", 10, "bold")).grid(row=0, column=0, sticky="w", pady=(0, 8))
+        
+        # Scrollable area
+        scroll_container = ttk.Frame(faces_card, style="Card.TFrame")
+        scroll_container.grid(row=1, column=0, sticky="nsew")
+        scroll_container.columnconfigure(0, weight=1)
+        scroll_container.rowconfigure(0, weight=1)
+        
+        self.faces_canvas = tk.Canvas(scroll_container, bg=self.colors['bg_dark'], highlightthickness=0, height=120)
+        self.faces_scroll = ttk.Scrollbar(scroll_container, orient="vertical", command=self.faces_canvas.yview)
         self.faces_inner = ttk.Frame(self.faces_canvas)
         self.faces_inner.bind("<Configure>", lambda e: self.faces_canvas.configure(scrollregion=self.faces_canvas.bbox("all")))
         self.faces_window = self.faces_canvas.create_window((0, 0), window=self.faces_inner, anchor="nw")
@@ -317,77 +475,81 @@ class AnonVisionGUI:
 
         self.faces_canvas.grid(row=0, column=0, sticky="nsew")
         self.faces_scroll.grid(row=0, column=1, sticky="ns")
-        self.faces_box.rowconfigure(0, weight=1)
+        
+        # Placeholder label styling
+        self.faces_box = faces_card
 
-        # actions
-        btns = ttk.Frame(self.faces_box)
-        btns.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(6, 0))
-        ttk.Button(btns, text="Protect All", command=self._protect_all).pack(side="left", padx=4)
-        ttk.Button(btns, text="Clear Protection", command=self._clear_protection).pack(side="left", padx=4)
+        # Actions
+        btns = ttk.Frame(faces_card, style="Card.TFrame")
+        btns.grid(row=2, column=0, sticky="ew", pady=(8, 0))
+        ttk.Button(btns, text="Protect All", command=self._protect_all).pack(side="left", padx=(0, 6))
+        ttk.Button(btns, text="Clear", command=self._clear_protection).pack(side="left")
 
-        # placeholder
+        # Placeholder
         self._refresh_faces_list()
 
+    def _build_export_section(self, parent):
+        """Export section with Apply and Save buttons"""
+        export_card = tk.Frame(parent, bg=self.colors['bg_medium'], padx=12, pady=12)
+        export_card.grid(row=3, column=0, sticky="ew", pady=(0, 12))
+        
+        ttk.Label(export_card, text="Export", style="Card.TLabel", font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(0, 8))
+        
+        ttk.Button(export_card, text="🛡  Apply Anonymization", command=self.apply_anonymization, style="Accent.TButton").pack(fill="x", pady=(0, 6))
+        ttk.Button(export_card, text="💾  Save Result", command=self.save_image, style="Teal.TButton").pack(fill="x")
+
     def _build_advanced(self, parent):
-        cont = ttk.Frame(parent)
-        cont.grid(row=3, column=0, sticky="ew")
+        """Detection Settings (collapsible)"""
+        cont = tk.Frame(parent, bg=self.colors['bg_dark'])
+        cont.pack(fill="x", pady=(0, 0))
 
         self._adv_open = tk.BooleanVar(value=False)
-        self.adv_btn = ttk.Button(cont, text="▶ Show Detection Settings", command=self._toggle_advanced)
-        self.adv_btn.pack(fill="x", pady=(2, 0))
+        self.adv_btn = ttk.Button(cont, text="▶  Detection Settings", command=self._toggle_advanced)
+        self.adv_btn.pack(fill="x", pady=(0, 0))
 
-        self.adv_frame = ttk.LabelFrame(cont, text="Detection Settings", padding=10)
+        self.adv_frame = tk.Frame(cont, bg=self.colors['bg_medium'], padx=12, pady=12)
 
-        # DNN
-        dnn_row = ttk.Frame(self.adv_frame)
-        dnn_row.pack(fill="x", pady=(4, 2))
-        ttk.Label(dnn_row, text="DNN Confidence:").pack(side="left")
+        # DNN settings
+        dnn_row = ttk.Frame(self.adv_frame, style="Card.TFrame")
+        dnn_row.pack(fill="x", pady=(0, 6))
+        ttk.Label(dnn_row, text="DNN Confidence:", style="Card.TLabel").pack(side="left")
         self.dnn_conf_sb = ttk.Spinbox(dnn_row, from_=0.10, to=0.95, increment=0.05, textvariable=self.dnn_confidence, width=6)
-        self.dnn_conf_sb.pack(side="left", padx=6)
+        self.dnn_conf_sb.pack(side="left", padx=(8, 0))
 
-        # Haar
-        haar = ttk.Frame(self.adv_frame)
-        haar.pack(fill="x", pady=(6, 2))
-        ttk.Label(haar, text="Haar Scale:").grid(row=0, column=0, sticky="w")
-        ttk.Spinbox(haar, from_=1.01, to=2.0, increment=0.01, textvariable=self.scale_factor, width=6).grid(row=0, column=1, padx=6)
-        ttk.Label(haar, text="Min Neighbors:").grid(row=0, column=2, sticky="w", padx=(12, 0))
-        ttk.Spinbox(haar, from_=1, to=10, increment=1, textvariable=self.min_neighbors, width=6).grid(row=0, column=3, padx=6)
-        ttk.Label(haar, text="Min Size(px):").grid(row=0, column=4, sticky="w", padx=(12, 0))
-        ttk.Spinbox(haar, from_=10, to=200, increment=5, textvariable=self.min_size, width=6).grid(row=0, column=5, padx=6)
+        # Haar settings
+        ttk.Label(self.adv_frame, text="Haar Settings", style="Card.TLabel", font=("Segoe UI", 9, "bold")).pack(anchor="w", pady=(6, 4))
+        
+        haar1 = ttk.Frame(self.adv_frame, style="Card.TFrame")
+        haar1.pack(fill="x", pady=2)
+        ttk.Label(haar1, text="Scale Factor:", style="Card.TLabel").pack(side="left")
+        ttk.Spinbox(haar1, from_=1.01, to=2.0, increment=0.01, textvariable=self.scale_factor, width=6).pack(side="left", padx=(8, 0))
+        
+        haar2 = ttk.Frame(self.adv_frame, style="Card.TFrame")
+        haar2.pack(fill="x", pady=2)
+        ttk.Label(haar2, text="Min Neighbors:", style="Card.TLabel").pack(side="left")
+        ttk.Spinbox(haar2, from_=1, to=10, increment=1, textvariable=self.min_neighbors, width=6).pack(side="left", padx=(8, 0))
+        
+        haar3 = ttk.Frame(self.adv_frame, style="Card.TFrame")
+        haar3.pack(fill="x", pady=2)
+        ttk.Label(haar3, text="Min Size (px):", style="Card.TLabel").pack(side="left")
+        ttk.Spinbox(haar3, from_=10, to=200, increment=5, textvariable=self.min_size, width=6).pack(side="left", padx=(8, 0))
 
-        # re-detect button
-        ttk.Button(self.adv_frame, text="Re-detect with current settings", command=self._redetect).pack(pady=8)
+        # Re-detect button
+        ttk.Button(self.adv_frame, text="Re-detect", command=self._redetect).pack(fill="x", pady=(10, 0))
 
         self._show_hide_advanced()
 
     def _build_status(self, parent):
-        s = ttk.Frame(parent)
-        s.grid(row=4, column=0, sticky="ew", pady=(6, 0))
-        self.status_label = ttk.Label(s, text="Ready", anchor="w")
+        """Status bar at bottom of right panel"""
+        status_frame = tk.Frame(parent, bg=self.colors['bg_medium'], padx=12, pady=8)
+        status_frame.grid(row=4, column=0, sticky="ew")
+        
+        self.status_label = ttk.Label(status_frame, text="Ready", style="Muted.TLabel", anchor="w")
         self.status_label.pack(fill="x")
 
     def _build_image_area(self):
-        # right side takes remaining space
-        right = ttk.Frame(self.root, padding=(6, 10, 10, 10))
-        right.grid(row=0, column=1, sticky="nsew")
-        right.columnconfigure(0, weight=1)
-        right.rowconfigure(0, weight=1)
-
-        wrap = ttk.LabelFrame(right, text="Image Preview", padding=6)
-        wrap.grid(row=0, column=0, sticky="nsew")
-        wrap.columnconfigure(0, weight=1)
-        wrap.rowconfigure(0, weight=1)
-
-        self.canvas = tk.Canvas(
-            wrap,
-            bg="#2A2A2E",
-            highlightthickness=1,
-            highlightbackground="#3A3A3F"
-        )
-        self.canvas.grid(row=0, column=0, sticky="nsew")
-        self.canvas.bind("<Configure>", lambda e: self._refresh_display())
-
-        self._draw_placeholder()
+        # This method is kept for compatibility but functionality moved to _build_center_panel
+        pass
 
     # ---------------- Actions ----------------
 
@@ -541,12 +703,6 @@ class AnonVisionGUI:
         }
         
         self._set_status(f"✓ Anonymized: {anonymized} | Protected: {protected} | Method: {method_names[method]}")
-        messagebox.showinfo(
-            "Complete",
-            f"✓ Anonymized: {anonymized} face(s)\n"
-            f"✓ Protected: {protected} face(s)\n"
-            f"✓ Method: {method_names[method]}"
-        )
         
         return out
 
@@ -604,9 +760,9 @@ class AnonVisionGUI:
         h = max(200, self.canvas.winfo_height())
         self.canvas.create_text(
             w // 2, h // 2,
-            text="No image loaded\nUse 'Select Image' to begin",
-            fill="#9CA3AF",
-            font=("Segoe UI", 14),
+            text="No image loaded\n\nSelect an image from the left panel\nthen click Detect Faces",
+            fill="#6B7280",
+            font=("Segoe UI", 13),
             justify="center"
         )
 
@@ -647,7 +803,7 @@ class AnonVisionGUI:
         rgb = cv2.cvtColor(bgr_to_show, cv2.COLOR_BGR2RGB)
         pil = Image.fromarray(rgb)
 
-        disp = resize_image_for_display(pil, max_width=max_w, max_height=max_h, fill_background=(42, 42, 46))
+        disp = resize_image_for_display(pil, max_width=max_w, max_height=max_h, fill_background=(30, 30, 34))
         self.photo_image = ImageTk.PhotoImage(disp)
 
         self.canvas.delete("all")
@@ -666,10 +822,10 @@ class AnonVisionGUI:
 
     def _show_hide_advanced(self):
         if self._adv_open.get():
-            self.adv_btn.config(text="▼ Hide Detection Settings")
+            self.adv_btn.config(text="▼  Detection Settings")
             self.adv_frame.pack(fill="x", pady=(6, 0))
         else:
-            self.adv_btn.config(text="▶ Show Detection Settings")
+            self.adv_btn.config(text="▶  Detection Settings")
             self.adv_frame.pack_forget()
 
     def _redetect(self):
@@ -690,7 +846,7 @@ class AnonVisionGUI:
             w.destroy()
         self.face_vars = []
         self.face_thumbs = []
-        ttk.Label(self.faces_inner, text="No faces yet — click Detect").pack(anchor="w")
+        ttk.Label(self.faces_inner, text="No faces detected yet", style="Muted.TLabel").pack(anchor="w", pady=4)
 
     def _build_face_checklist(self):
         """Populate faces panel with thumbnails + protect checkboxes"""
@@ -700,7 +856,7 @@ class AnonVisionGUI:
         self.face_thumbs = []
 
         if self.img_bgr is None or not self.detected_faces:
-            ttk.Label(self.faces_inner, text="No faces found").pack(anchor="w")
+            ttk.Label(self.faces_inner, text="No faces found", style="Muted.TLabel").pack(anchor="w", pady=4)
             return
 
         for idx, (x, y, w, h) in enumerate(self.detected_faces):
@@ -715,18 +871,18 @@ class AnonVisionGUI:
                 if crop_bgr.size == 0:
                     raise ValueError("Empty crop")
                 thumb_rgb = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2RGB)
-                thumb_pil = Image.fromarray(thumb_rgb).resize((64, 64), Image.LANCZOS)
+                thumb_pil = Image.fromarray(thumb_rgb).resize((48, 48), Image.LANCZOS)
                 thumb_tk = ImageTk.PhotoImage(thumb_pil)
                 self.face_thumbs.append(thumb_tk)
                 lbl = ttk.Label(row, image=thumb_tk)
                 lbl.image = thumb_tk
                 lbl.pack(side="left", padx=(0, 8))
             except Exception:
-                ttk.Label(row, text="[face]").pack(side="left", padx=(0, 8))
+                ttk.Label(row, text="[?]").pack(side="left", padx=(0, 8))
 
             var = tk.BooleanVar(value=False)
             self.face_vars.append(var)
-            cb = ttk.Checkbutton(row, text=f"Face {idx+1} — Protect", variable=var, command=self._refresh_display)
+            cb = ttk.Checkbutton(row, text=f"Face {idx+1}", variable=var, command=self._refresh_display)
             cb.pack(side="left")
 
     def _protect_all(self):
